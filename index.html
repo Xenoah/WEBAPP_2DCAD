@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>drawing.dxf — WEBAPP 2DCAD</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app">
+
+  <!-- リボン -->
+  <header id="ribbon">
+    <div class="ribbon-group">
+      <div class="ribbon-title">ファイル</div>
+      <div class="ribbon-btns">
+        <button data-cmd="NEW" title="新規図面">🗋<span>新規</span></button>
+        <button data-cmd="OPEN" title="DXF を開く">📂<span>開く</span></button>
+        <button data-cmd="SAVEAS" title="DXF 書き出し (R12)">💾<span>DXF保存</span></button>
+      </div>
+    </div>
+    <div class="ribbon-group">
+      <div class="ribbon-title">作図</div>
+      <div class="ribbon-btns">
+        <button data-cmd="LINE" title="LINE (L)">╱<span>線分</span></button>
+        <button data-cmd="CIRCLE" title="CIRCLE (C)">◯<span>円</span></button>
+        <button data-cmd="ARC" title="ARC (A) 3点">◠<span>円弧</span></button>
+        <button data-cmd="PLINE" title="PLINE (PL)">﹆<span>ポリライン</span></button>
+        <button data-cmd="RECTANG" title="RECTANG (REC)">▭<span>長方形</span></button>
+        <button data-cmd="TEXT" title="TEXT (T)">A<span>文字</span></button>
+        <button data-cmd="POINT" title="POINT (PO)">·<span>点</span></button>
+      </div>
+    </div>
+    <div class="ribbon-group">
+      <div class="ribbon-title">修正</div>
+      <div class="ribbon-btns">
+        <button data-cmd="MOVE" title="MOVE (M)">✥<span>移動</span></button>
+        <button data-cmd="COPY" title="COPY (CO)">⧉<span>複写</span></button>
+        <button data-cmd="ROTATE" title="ROTATE (RO)">⟳<span>回転</span></button>
+        <button data-cmd="SCALE" title="SCALE (SC)">⤢<span>尺度</span></button>
+        <button data-cmd="MIRROR" title="MIRROR (MI)">⧎<span>鏡像</span></button>
+        <button data-cmd="OFFSET" title="OFFSET (O)">≣<span>オフセット</span></button>
+        <button data-cmd="ERASE" title="ERASE (E)">🗑<span>削除</span></button>
+        <button data-cmd="EXPLODE" title="EXPLODE (X)">✶<span>分解</span></button>
+      </div>
+    </div>
+    <div class="ribbon-group">
+      <div class="ribbon-title">表示・計測</div>
+      <div class="ribbon-btns">
+        <button data-cmd="ZOOM" title="ZOOM (Z)">🔍<span>ズーム</span></button>
+        <button data-cmd="PAN" title="PAN (P)">✋<span>画面移動</span></button>
+        <button data-cmd="DIST" title="DIST (DI)">📏<span>距離</span></button>
+        <button data-cmd="UNDO" title="UNDO (U / Ctrl+Z)">↶<span>元に戻す</span></button>
+        <button data-cmd="REDO" title="REDO (Ctrl+Y)">↷<span>やり直し</span></button>
+      </div>
+    </div>
+  </header>
+
+  <!-- メイン -->
+  <div id="main">
+    <div id="canvas-wrap">
+      <canvas id="canvas"></canvas>
+    </div>
+    <aside id="side">
+      <section id="layers-panel" class="panel">
+        <h3>画層</h3>
+        <div id="layers-list"></div>
+        <div id="layer-add">
+          <input id="layer-add-name" type="text" placeholder="新しい画層名">
+          <button id="layer-add-btn">追加</button>
+        </div>
+      </section>
+      <section id="props-panel" class="panel">
+        <h3>プロパティ</h3>
+        <div id="props-body"></div>
+      </section>
+    </aside>
+  </div>
+
+  <!-- コマンドライン -->
+  <div id="cmd-area">
+    <div id="cmd-log"></div>
+    <div id="cmd-row">
+      <span id="cmd-prompt">コマンド:</span>
+      <input id="cmd-input" type="text" autocomplete="off" spellcheck="false"
+             placeholder="コマンドを入力 (L, C, M, Z ...) — 座標: 10,20 / @5,5 / @10<45">
+    </div>
+  </div>
+
+  <!-- ステータスバー -->
+  <footer id="status">
+    <span id="status-coords">0.0000, 0.0000</span>
+    <span class="status-toggles">
+      <button id="tg-snap"  data-toggle="snap"  title="グリッドスナップ (F9)">SNAP</button>
+      <button id="tg-grid"  data-toggle="grid"  title="グリッド表示 (F7)">GRID</button>
+      <button id="tg-ortho" data-toggle="ortho" title="直交モード (F8)">ORTHO</button>
+      <button id="tg-polar" data-toggle="polar" title="極トラッキング (F10)">POLAR</button>
+      <button id="tg-osnap" data-toggle="osnap" title="オブジェクトスナップ (F3)">OSNAP</button>
+    </span>
+    <span id="status-zoom">100%</span>
+  </footer>
+
+</div>
+
+<input type="file" id="file-input" accept=".dxf,.dwg" hidden>
+<div id="toast"></div>
+
+<script src="dxf.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

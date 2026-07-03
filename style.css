@@ -1,0 +1,293 @@
+/* WEBAPP_2DCAD — AutoCAD 風ダーク UI */
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body { height: 100%; overflow: hidden; }
+body {
+  font-family: "Yu Gothic UI", "Meiryo UI", "Segoe UI", sans-serif;
+  font-size: 13px;
+  background: #2b2f36;
+  color: #d5dbe3;
+  user-select: none;
+}
+
+#app { display: flex; flex-direction: column; height: 100vh; }
+
+/* ---------------- リボン ---------------- */
+#ribbon {
+  display: flex;
+  gap: 2px;
+  background: #33383f;
+  border-bottom: 1px solid #1c2026;
+  padding: 4px 6px 2px;
+  overflow-x: auto;
+  flex: none;
+}
+.ribbon-group {
+  display: flex;
+  flex-direction: column-reverse;
+  border-right: 1px solid #454b54;
+  padding: 0 8px 0 4px;
+}
+.ribbon-title {
+  text-align: center;
+  font-size: 10px;
+  color: #8b95a3;
+  padding: 2px 0 3px;
+}
+.ribbon-btns { display: flex; gap: 2px; }
+.ribbon-btns button {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  min-width: 52px;
+  padding: 5px 4px 3px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  color: #d5dbe3;
+  font-size: 17px;
+  line-height: 1.1;
+  cursor: pointer;
+}
+.ribbon-btns button span { font-size: 10.5px; color: #aeb7c2; white-space: nowrap; }
+.ribbon-btns button:hover { background: #3d434c; border-color: #4d545e; }
+.ribbon-btns button:active { background: #2a5a8f; }
+
+/* ---------------- メイン ---------------- */
+#main { display: flex; flex: 1; min-height: 0; }
+#canvas-wrap { flex: 1; position: relative; min-width: 0; overflow: hidden; background: #212830; }
+#canvas { display: block; cursor: none; }
+
+#side {
+  width: 250px;
+  flex: none;
+  background: #2e333a;
+  border-left: 1px solid #1c2026;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+}
+.panel { border-bottom: 1px solid #1c2026; padding: 8px; }
+.panel h3 {
+  font-size: 11px;
+  color: #8b95a3;
+  letter-spacing: 1px;
+  margin-bottom: 6px;
+  text-transform: uppercase;
+}
+.panel.flash { animation: flash-bg 0.9s; }
+@keyframes flash-bg { 0% { background: #2a5a8f; } 100% { background: transparent; } }
+
+/* 画層 */
+.layer-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 4px;
+  border-radius: 3px;
+}
+.layer-row.current { background: #39424e; }
+.lyr-cur { width: 14px; color: #6fbf6f; cursor: pointer; flex: none; }
+.lyr-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.lyr-btn {
+  background: transparent;
+  border: none;
+  color: #aeb7c2;
+  cursor: pointer;
+  font-size: 12px;
+  padding: 1px 2px;
+  flex: none;
+}
+.lyr-btn:hover { color: #fff; }
+.lyr-swatch {
+  width: 16px; height: 16px;
+  border: 1px solid #555;
+  border-radius: 2px;
+  cursor: pointer;
+  flex: none;
+}
+.lyr-ltype {
+  width: 62px;
+  flex: none;
+  background: #262a30;
+  color: #d5dbe3;
+  border: 1px solid #454b54;
+  border-radius: 2px;
+  font-size: 10px;
+}
+#layer-add { display: flex; gap: 4px; margin-top: 6px; }
+#layer-add input {
+  flex: 1;
+  min-width: 0;
+  background: #262a30;
+  border: 1px solid #454b54;
+  border-radius: 3px;
+  color: #d5dbe3;
+  padding: 3px 6px;
+  font-size: 12px;
+}
+#layer-add button {
+  background: #3d434c;
+  border: 1px solid #4d545e;
+  border-radius: 3px;
+  color: #d5dbe3;
+  padding: 3px 10px;
+  cursor: pointer;
+}
+#layer-add button:hover { background: #4a515b; }
+
+/* プロパティ */
+.props-empty { color: #6d7683; font-size: 12px; padding: 4px; }
+.props-head { font-weight: bold; margin-bottom: 6px; color: #e8edf3; }
+.props-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 0;
+}
+.props-row label { width: 58px; flex: none; color: #8b95a3; font-size: 12px; }
+.props-row select {
+  flex: 1;
+  background: #262a30;
+  color: #d5dbe3;
+  border: 1px solid #454b54;
+  border-radius: 2px;
+  font-size: 12px;
+  padding: 2px;
+}
+.props-row.ro span {
+  flex: 1;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  user-select: text;
+}
+
+/* ---------------- コマンドライン ---------------- */
+#cmd-area {
+  flex: none;
+  background: #262a30;
+  border-top: 1px solid #1c2026;
+  display: flex;
+  flex-direction: column;
+}
+#cmd-log {
+  height: 72px;
+  overflow-y: auto;
+  padding: 3px 8px;
+  font-family: Consolas, "MS Gothic", monospace;
+  font-size: 12px;
+  color: #9aa5b1;
+  user-select: text;
+}
+#cmd-log .cmd { color: #d5dbe3; }
+#cmd-log .echo { color: #7f8a97; }
+#cmd-log .err { color: #e2755f; }
+#cmd-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border-top: 1px solid #33383f;
+}
+#cmd-prompt {
+  color: #7fb6e8;
+  font-family: Consolas, "MS Gothic", monospace;
+  font-size: 12.5px;
+  white-space: nowrap;
+  flex: none;
+}
+#cmd-input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: #e8edf3;
+  font-family: Consolas, "MS Gothic", monospace;
+  font-size: 13px;
+}
+#cmd-input::placeholder { color: #555f6b; }
+
+/* ---------------- ステータスバー ---------------- */
+#status {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: #33383f;
+  border-top: 1px solid #1c2026;
+  padding: 2px 10px;
+  font-size: 12px;
+}
+#status-coords {
+  font-family: Consolas, monospace;
+  min-width: 190px;
+  color: #aeb7c2;
+}
+.status-toggles { display: flex; gap: 3px; flex: 1; }
+.status-toggles button {
+  background: #2a2e34;
+  border: 1px solid #454b54;
+  border-radius: 2px;
+  color: #6d7683;
+  font-size: 10.5px;
+  letter-spacing: 0.5px;
+  padding: 2px 8px;
+  cursor: pointer;
+}
+.status-toggles button.active {
+  background: #2a5a8f;
+  color: #e8f1fa;
+  border-color: #3f74ac;
+}
+#status-zoom { font-family: Consolas, monospace; color: #aeb7c2; }
+
+/* ---------------- ポップアップ・トースト ---------------- */
+#palette-pop {
+  position: fixed;
+  z-index: 100;
+  display: grid;
+  grid-template-columns: repeat(6, 22px);
+  gap: 3px;
+  background: #2e333a;
+  border: 1px solid #4d545e;
+  border-radius: 4px;
+  padding: 6px;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+}
+#palette-pop button {
+  width: 22px; height: 22px;
+  border: 1px solid #555;
+  border-radius: 2px;
+  cursor: pointer;
+}
+#palette-pop button:hover { outline: 2px solid #7fb6e8; }
+
+#toast {
+  position: fixed;
+  left: 50%;
+  bottom: 130px;
+  transform: translateX(-50%) translateY(20px);
+  max-width: 70%;
+  background: #3d434c;
+  color: #e8edf3;
+  border: 1px solid #4d545e;
+  border-left: 3px solid #2a8f5a;
+  border-radius: 4px;
+  padding: 8px 14px;
+  font-size: 12.5px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s, transform 0.2s;
+  z-index: 200;
+}
+#toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+#toast.error { border-left-color: #c0533b; }
