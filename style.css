@@ -11,16 +11,45 @@ body {
 
 #app { display: flex; flex-direction: column; height: 100vh; }
 
-/* ---------------- リボン ---------------- */
+/* ---------------- リボン（タブ式） ---------------- */
 #ribbon {
-  display: flex;
-  gap: 2px;
   background: #33383f;
   border-bottom: 1px solid #1c2026;
-  padding: 4px 6px 2px;
-  overflow-x: auto;
   flex: none;
 }
+#ribbon-tabs {
+  display: flex;
+  gap: 1px;
+  background: #262a30;
+  padding: 3px 6px 0;
+  border-bottom: 1px solid #1c2026;
+}
+#ribbon-tabs button {
+  background: transparent;
+  border: 1px solid transparent;
+  border-bottom: none;
+  border-radius: 4px 4px 0 0;
+  color: #aeb7c2;
+  font-size: 12px;
+  padding: 4px 14px 5px;
+  cursor: pointer;
+}
+#ribbon-tabs button:hover { color: #e8edf3; background: #2e333a; }
+#ribbon-tabs button.active {
+  background: #33383f;
+  border-color: #1c2026;
+  color: #e8edf3;
+  position: relative;
+  top: 1px;
+}
+.ribbon-page {
+  display: none;
+  gap: 2px;
+  padding: 4px 6px 2px;
+  overflow-x: auto;
+  min-height: 62px;
+}
+.ribbon-page.active { display: flex; }
 .ribbon-group {
   display: flex;
   flex-direction: column-reverse;
@@ -50,6 +79,8 @@ body {
   cursor: pointer;
 }
 .ribbon-btns button span { font-size: 10.5px; color: #aeb7c2; white-space: nowrap; }
+.ribbon-btns.compact button { min-width: 44px; font-size: 14px; padding: 4px 3px 2px; }
+.ribbon-btns.compact button span { font-size: 9.5px; }
 .ribbon-btns button:hover { background: #3d434c; border-color: #4d545e; }
 .ribbon-btns button:active { background: #2a5a8f; }
 
@@ -291,3 +322,177 @@ body {
 }
 #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 #toast.error { border-left-color: #c0533b; }
+
+/* ---------------- 拘束パネル ---------------- */
+#con-status {
+  font-size: 11.5px;
+  color: #aeb7c2;
+  padding: 2px 4px 6px;
+  line-height: 1.5;
+  user-select: text;
+}
+#con-status .con-ok { color: #6fbf6f; }
+#con-status .con-warn { color: #e2b53b; }
+#con-status .con-err { color: #e2755f; }
+#con-list { max-height: 180px; overflow-y: auto; }
+.con-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 4px;
+  border-radius: 3px;
+  font-size: 11.5px;
+}
+.con-row:hover { background: #363c45; }
+.con-row .con-kind { color: #c79bff; flex: none; min-width: 56px; }
+.con-row .con-ents { color: #8b95a3; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.con-row input.con-val {
+  width: 58px;
+  flex: none;
+  background: #262a30;
+  border: 1px solid #454b54;
+  border-radius: 2px;
+  color: #e8d5ff;
+  font-size: 11px;
+  padding: 1px 3px;
+  text-align: right;
+}
+.con-row .con-del {
+  background: transparent;
+  border: none;
+  color: #8b95a3;
+  cursor: pointer;
+  flex: none;
+  padding: 0 2px;
+}
+.con-row .con-del:hover { color: #e2755f; }
+#con-actions { display: flex; gap: 4px; margin-top: 6px; }
+#con-actions button {
+  flex: 1;
+  background: #3d434c;
+  border: 1px solid #4d545e;
+  border-radius: 3px;
+  color: #d5dbe3;
+  padding: 3px 0;
+  cursor: pointer;
+  font-size: 11.5px;
+}
+#con-actions button:hover { background: #4a515b; }
+.con-empty { color: #6d7683; font-size: 11.5px; padding: 2px 4px; }
+
+/* ---------------- プロパティパネル拡張 ---------------- */
+.props-row input[type="text"], .props-row input[type="number"] {
+  flex: 1;
+  min-width: 0;
+  background: #262a30;
+  color: #d5dbe3;
+  border: 1px solid #454b54;
+  border-radius: 2px;
+  font-size: 12px;
+  padding: 2px 4px;
+}
+.props-row input[type="range"] { flex: 1; }
+.props-row input[type="checkbox"] { flex: none; }
+.props-sub {
+  margin-top: 8px;
+  padding-top: 6px;
+  border-top: 1px solid #3a4048;
+  font-size: 11px;
+  color: #8b95a3;
+  letter-spacing: 0.5px;
+}
+
+/* ---------------- モーダル ---------------- */
+#modal-back {
+  position: fixed;
+  inset: 0;
+  background: rgba(10, 12, 16, 0.55);
+  z-index: 300;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+#modal-back[hidden] { display: none; }
+#modal-box {
+  background: #2e333a;
+  border: 1px solid #4d545e;
+  border-radius: 6px;
+  box-shadow: 0 8px 30px rgba(0,0,0,0.6);
+  min-width: 380px;
+  max-width: 560px;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  background: #33383f;
+  border-bottom: 1px solid #1c2026;
+  font-weight: bold;
+  color: #e8edf3;
+}
+.modal-head button {
+  background: transparent;
+  border: none;
+  color: #aeb7c2;
+  font-size: 15px;
+  cursor: pointer;
+}
+.modal-head button:hover { color: #fff; }
+.modal-body { padding: 10px 14px; overflow-y: auto; }
+.modal-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 0;
+}
+.modal-row label { width: 120px; flex: none; color: #8b95a3; font-size: 12px; }
+.modal-row input, .modal-row select {
+  flex: 1;
+  background: #262a30;
+  color: #d5dbe3;
+  border: 1px solid #454b54;
+  border-radius: 3px;
+  font-size: 12.5px;
+  padding: 3px 6px;
+}
+.modal-foot {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+  padding: 8px 12px;
+  border-top: 1px solid #1c2026;
+}
+.modal-foot button {
+  background: #3d434c;
+  border: 1px solid #4d545e;
+  border-radius: 3px;
+  color: #d5dbe3;
+  padding: 4px 14px;
+  cursor: pointer;
+}
+.modal-foot button:hover { background: #4a515b; }
+.modal-foot button.primary { background: #2a5a8f; border-color: #3f74ac; }
+.modal-foot button.primary:hover { background: #336ba7; }
+
+/* セルフチェック結果 */
+.check-row {
+  display: flex;
+  gap: 8px;
+  padding: 3px 2px;
+  font-size: 12.5px;
+  border-bottom: 1px solid #363c45;
+  user-select: text;
+}
+.check-row .ck-mark { flex: none; width: 18px; }
+.check-row.ok .ck-mark { color: #6fbf6f; }
+.check-row.ng .ck-mark { color: #e2755f; }
+.check-row .ck-name { flex: 1; }
+.check-row .ck-detail { color: #8b95a3; font-size: 11px; }
+.check-summary { padding: 8px 2px 2px; font-weight: bold; }
+.check-summary.ok { color: #6fbf6f; }
+.check-summary.ng { color: #e2755f; }

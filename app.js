@@ -14,6 +14,18 @@ const S = {
   fileName: 'drawing.dxf',
   lastCmd: '', lastPoint: null, lastTextH: 5,
   nextId: 1,
+  // 寸法スタイル
+  dimStyles: [{ name: 'STANDARD', textH: 3.5, arrow: 2.5, extOffset: 0.8, extBeyond: 1.25, gap: 1, prec: 2, scale: 1 }],
+  curDimStyle: 'STANDARD',
+  // 拘束
+  constraints: [],              // {id, kind, refs:[{id,pt}], value?, pos?, data?}
+  nextCid: 1,
+  conStatus: null,              // 直近ソルバー診断 {converged, dof, redundant, nEqs, nVars, maxRes}
+  // 画像データ（undo スナップショット外で保持: キー → dataURL）
+  imageData: {},
+  nextImgKey: 1,
+  // 修正コマンド既定値
+  filletR: 0, chamferD1: 0, chamferD2: 0,
   settings: {
     grid: true, gridSp: 10,
     snap: false, snapSp: 10,
@@ -179,6 +191,13 @@ function entBBox(e) {
     for (const [lx, ly] of [[0, 0], [w, 0], [w, hh], [0, hh]])
       pts.push({ x: e.x + lx * cs - ly * sn, y: e.y + lx * sn + ly * cs });
   } else if (e.type === 'point') pts.push({ x: e.x, y: e.y });
+  else if (e.type === 'dim') {
+    const g = dimGeometry(e);
+    for (const s of g.segs) pts.push(s[0], s[1]);
+    if (g.label) pts.push(g.label.p);
+  } else if (e.type === 'image') {
+    for (const c of imageCorners(e)) pts.push(c);
+  }
   if (!pts.length) return null;
   let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
   for (const p of pts) { x0 = Math.min(x0, p.x); y0 = Math.min(y0, p.y); x1 = Math.max(x1, p.x); y1 = Math.max(y1, p.y); }
@@ -203,7 +222,28 @@ function hitTest(e, p, tol) {
   }
   if (e.type === 'text') { const b = entBBox(e); return b && p.x >= b.x0 - tol && p.x <= b.x1 + tol && p.y >= b.y0 - tol && p.y <= b.y1 + tol; }
   if (e.type === 'point') return dist(p, { x: e.x, y: e.y }) <= tol * 1.5;
+  if (e.type === 'dim') {
+    const g = dimGeometry(e);
+    for (const s of g.segs) if (distPtSeg(p, s[0], s[1]) <= tol) return true;
+    if (g.label) {
+      const w = g.label.str.length * g.label.h * 0.7, hh = g.label.h * 1.3;
+      if (dist(p, g.label.p) <= Math.max(w, hh)) return true;
+    }
+    return false;
+  }
+  if (e.type === 'image') {
+    // 回転を戻したローカル座標で矩形判定
+    const cs = Math.cos(-(e.rot || 0)), sn = Math.sin(-(e.rot || 0));
+    const lx = (p.x - e.x) * cs - (p.y - e.y) * sn;
+    const ly = (p.x - e.x) * sn + (p.y - e.y) * cs;
+    return lx >= -tol && lx <= e.w + tol && ly >= -tol && ly <= e.h + tol;
+  }
   return false;
+}
+function imageCorners(e) {
+  const cs = Math.cos(e.rot || 0), sn = Math.sin(e.rot || 0);
+  return [[0, 0], [e.w, 0], [e.w, e.h], [0, e.h]].map(([lx, ly]) =>
+    ({ x: e.x + lx * cs - ly * sn, y: e.y + lx * sn + ly * cs }));
 }
 
 /* ================================================================ エンティティ変換 */
@@ -212,6 +252,11 @@ function mapPts(e, fn) {
   if (c.type === 'line') { const p1 = fn({ x: e.x1, y: e.y1 }), p2 = fn({ x: e.x2, y: e.y2 }); c.x1 = p1.x; c.y1 = p1.y; c.x2 = p2.x; c.y2 = p2.y; }
   else if (c.type === 'circle' || c.type === 'arc') { const p = fn({ x: e.cx, y: e.cy }); c.cx = p.x; c.cy = p.y; }
   else if (c.type === 'pline') c.pts = e.pts.map(p => Object.assign({}, p, fn(p)));
+  else if (c.type === 'dim') {
+    if (e.p1) c.p1 = fn(e.p1);
+    if (e.p2) c.p2 = fn(e.p2);
+    if (e.pos) c.pos = fn(e.pos);
+  }
   else { const p = fn({ x: e.x, y: e.y }); c.x = p.x; c.y = p.y; }
   return c;
 }
@@ -221,7 +266,8 @@ function rotateEnt(e, c, a) {
   const rot = p => ({ x: c.x + (p.x - c.x) * cs - (p.y - c.y) * sn, y: c.y + (p.x - c.x) * sn + (p.y - c.y) * cs });
   const o = mapPts(e, rot);
   if (o.type === 'arc') { o.a0 = e.a0 + a; o.a1 = e.a1 + a; }
-  if (o.type === 'text') o.rot = (e.rot || 0) + a;
+  if (o.type === 'text' || o.type === 'image') o.rot = (e.rot || 0) + a;
+  if (o.type === 'dim' && o.dtype === 'linear') o.ang = (e.ang || 0) + a;
   return o;
 }
 function scaleEnt(e, c, f) {
@@ -229,6 +275,8 @@ function scaleEnt(e, c, f) {
   const o = mapPts(e, sc);
   if (o.type === 'circle' || o.type === 'arc') o.r = e.r * f;
   if (o.type === 'text') o.h = e.h * f;
+  if (o.type === 'image') { o.w = e.w * f; o.h = e.h * f; }
+  if (o.type === 'dim' && e.r != null) o.r = e.r * f;
   return o;
 }
 function mirrorEnt(e, p1, p2) {
@@ -244,7 +292,8 @@ function mirrorEnt(e, p1, p2) {
   const o = mapPts(e, ref);
   if (o.type === 'arc') { o.a0 = 2 * t - e.a1; o.a1 = 2 * t - e.a0; }
   if (o.type === 'pline') o.pts.forEach(p => { if (p.bulge) p.bulge = -p.bulge; });
-  if (o.type === 'text') o.rot = 2 * t - (e.rot || 0);
+  if (o.type === 'text' || o.type === 'image') o.rot = 2 * t - (e.rot || 0);
+  if (o.type === 'dim' && o.dtype === 'linear') o.ang = 2 * t - (e.ang || 0);
   return o;
 }
 
@@ -272,6 +321,8 @@ function entSnapPoints(e) {
     }
   } else if (e.type === 'point' || e.type === 'text') {
     if (M.end) out.push({ x: e.x, y: e.y, kind: 'end' });
+  } else if (e.type === 'image') {
+    if (M.end) for (const c of imageCorners(e)) out.push({ x: c.x, y: c.y, kind: 'end' });
   }
   return out;
 }
@@ -374,10 +425,17 @@ function redraw() {
   ctx.fillStyle = '#212830';
   ctx.fillRect(0, 0, W, H);
   drawGrid(W, H);
+  // 画像下敷きを最初に描画（他のオブジェクトの下になる）
   for (const e of S.entities) {
-    if (layerOf(e).on === false) continue;
+    if (e.type !== 'image' || layerOf(e).on === false) continue;
     drawEnt(ctx, e);
   }
+  for (const e of S.entities) {
+    if (e.type === 'image' || layerOf(e).on === false) continue;
+    drawEnt(ctx, e);
+  }
+  // 寸法拘束の注釈
+  drawConstraintAnnos(ctx);
   // 選択ハイライト + グリップ
   const selSet = Engine.tempSel && Engine.tempSel.size ? new Set([...S.sel, ...Engine.tempSel]) : S.sel;
   for (const id of selSet) {
@@ -488,8 +546,91 @@ function drawEnt(g, e, opt) {
     const p = w2s({ x: e.x, y: e.y });
     g.setLineDash([]);
     g.beginPath(); g.moveTo(p.x - 4, p.y); g.lineTo(p.x + 4, p.y); g.moveTo(p.x, p.y - 4); g.lineTo(p.x, p.y + 4); g.stroke();
+  } else if (e.type === 'dim') {
+    drawDimGeometry(g, dimGeometry(e), col, opt.dash);
+  } else if (e.type === 'image') {
+    drawImageEnt(g, e, opt);
   }
   g.setLineDash([]);
+}
+/* 寸法ジオメトリ（dimGeometry の戻り値）を描画。拘束注釈でも共用 */
+function drawDimGeometry(g, geo, col, dash) {
+  g.strokeStyle = col;
+  g.fillStyle = col;
+  g.lineWidth = 1.1;
+  g.setLineDash(dash || []);
+  for (const s of geo.segs) {
+    const a = w2s(s[0]), b = w2s(s[1]);
+    g.beginPath(); g.moveTo(a.x, a.y); g.lineTo(b.x, b.y); g.stroke();
+  }
+  g.setLineDash([]);
+  for (const ar of geo.arrows) {
+    // ar: {p(先端 world), ang(向き world rad), size(world)}
+    const tip = w2s(ar.p);
+    const L = Math.max(4, ar.size * S.view.scale);
+    const a = -ar.ang; // screen 角度（y 反転）
+    const x1 = tip.x - L * Math.cos(a) + L * 0.35 * Math.sin(a);
+    const y1 = tip.y - L * Math.sin(a) - L * 0.35 * Math.cos(a);
+    const x2 = tip.x - L * Math.cos(a) - L * 0.35 * Math.sin(a);
+    const y2 = tip.y - L * Math.sin(a) + L * 0.35 * Math.cos(a);
+    g.beginPath(); g.moveTo(tip.x, tip.y); g.lineTo(x1, y1); g.lineTo(x2, y2); g.closePath(); g.fill();
+  }
+  if (geo.label) {
+    const p = w2s(geo.label.p);
+    g.save();
+    g.translate(p.x, p.y);
+    g.rotate(-(geo.label.ang || 0));
+    g.font = Math.max(3, geo.label.h * S.view.scale) + 'px "Yu Gothic", "Meiryo", sans-serif';
+    g.textAlign = 'center';
+    g.textBaseline = 'bottom';
+    g.fillText(geo.label.str, 0, 0);
+    g.restore();
+  }
+}
+function drawImageEnt(g, e, opt) {
+  const img = getImgEl(e.src);
+  const p = w2s({ x: e.x, y: e.y });
+  g.save();
+  g.translate(p.x, p.y);
+  g.rotate(-(e.rot || 0));
+  const sw = e.w * S.view.scale, sh = e.h * S.view.scale;
+  if (img && img.complete && img.naturalWidth) {
+    g.globalAlpha = e.opacity != null ? e.opacity : 1;
+    g.drawImage(img, 0, -sh, sw, sh);
+    g.globalAlpha = 1;
+  } else {
+    g.strokeStyle = '#6d7683';
+    g.setLineDash([4, 4]);
+    g.strokeRect(0, -sh, sw, sh);
+    g.setLineDash([]);
+    g.fillStyle = '#6d7683';
+    g.font = '11px sans-serif';
+    g.fillText('画像読み込み中...', 6, -6);
+  }
+  if (opt && opt.dash) { // 選択枠
+    g.strokeStyle = opt.color || '#59f';
+    g.setLineDash(opt.dash);
+    g.strokeRect(0, -sh, sw, sh);
+    g.setLineDash([]);
+  }
+  if (e.locked) {
+    g.fillStyle = 'rgba(220,230,240,0.7)';
+    g.font = '12px sans-serif';
+    g.fillText('🔒', 4, -4);
+  }
+  g.restore();
+}
+/* 画像要素キャッシュ */
+const IMG_CACHE = {};
+function getImgEl(key) {
+  if (!key || !S.imageData[key]) return null;
+  if (!IMG_CACHE[key]) {
+    const img = new Image();
+    img.onload = scheduleRedraw;
+    img.src = S.imageData[key];
+    IMG_CACHE[key] = img;
+  }
+  return IMG_CACHE[key];
 }
 function drawGrips(e) {
   let pts = [];
@@ -497,6 +638,8 @@ function drawGrips(e) {
   else if (e.type === 'circle') { pts = [{ x: e.cx, y: e.cy }]; for (let q = 0; q < 4; q++) pts.push(arcPoint(e, q * Math.PI / 2)); }
   else if (e.type === 'arc') pts = [{ x: e.cx, y: e.cy }, arcPoint(e, e.a0), arcPoint(e, e.a1), arcPoint(e, e.a0 + ccwSpan(e.a0, e.a1) / 2)];
   else if (e.type === 'pline') pts = e.pts;
+  else if (e.type === 'dim') { pts = []; if (e.p1) pts.push(e.p1); if (e.p2) pts.push(e.p2); if (e.pos) pts.push(e.pos); }
+  else if (e.type === 'image') pts = imageCorners(e);
   else pts = [{ x: e.x, y: e.y }];
   ctx.fillStyle = '#2f7fff';
   ctx.strokeStyle = '#dce6f5';
@@ -558,17 +701,28 @@ function gline(g, a, b, color) {
   g.setLineDash([]);
 }
 function wantsPoint() {
-  return Engine.req && ['point', 'dist', 'angle', 'pickone'].includes(Engine.req.type);
+  return Engine.req && ['point', 'dist', 'angle', 'pickone', 'pickpt', 'refpt'].includes(Engine.req.type);
 }
 
 /* ================================================================ 履歴 */
-function snapshot() { return { entities: clone(S.entities), layers: clone(S.layers), clayer: S.clayer }; }
+function snapshot() {
+  return {
+    entities: clone(S.entities), layers: clone(S.layers), clayer: S.clayer,
+    constraints: clone(S.constraints), dimStyles: clone(S.dimStyles), curDimStyle: S.curDimStyle,
+    nextCid: S.nextCid
+  };
+}
 function applySnapshot(sn) {
   S.entities = clone(sn.entities);
   S.layers = clone(sn.layers);
   S.clayer = sn.clayer;
+  S.constraints = clone(sn.constraints || []);
+  S.dimStyles = clone(sn.dimStyles || S.dimStyles);
+  S.curDimStyle = sn.curDimStyle || S.curDimStyle;
+  S.nextCid = sn.nextCid || S.nextCid;
+  S.conStatus = null;
   S.sel.clear();
-  renderLayers(); renderProps(); scheduleRedraw();
+  renderLayers(); renderProps(); renderConstraints(); scheduleRedraw();
 }
 function pushHistory() {
   S.undoStack.push(snapshot());
@@ -669,6 +823,8 @@ const Engine = {
 const P = (prompt, opts) => Object.assign({ type: 'point', prompt }, opts || {});
 const SEL = prompt => ({ type: 'select', prompt });
 const PICK = prompt => ({ type: 'pickone', prompt });
+const PICKPT = (prompt, opts) => Object.assign({ type: 'pickpt', prompt }, opts || {});  // {id, pt:クリック点} を返す
+const REF = prompt => ({ type: 'refpt', prompt });                                        // {entId, pt, x, y} を返す
 const DST = (prompt, opts) => Object.assign({ type: 'dist', prompt }, opts || {});
 const ANG = (prompt, opts) => Object.assign({ type: 'angle', prompt }, opts || {});
 const STR = (prompt, opts) => Object.assign({ type: 'string', prompt }, opts || {});
@@ -684,12 +840,19 @@ function removeIds(ids) {
   const set = ids instanceof Set ? ids : new Set(ids);
   S.entities = S.entities.filter(e => !set.has(e.id));
   for (const id of set) S.sel.delete(id);
+  // 削除エンティティを参照する拘束も削除
+  const before = S.constraints.length;
+  S.constraints = S.constraints.filter(c => !c.refs.some(rf => set.has(rf.id)));
+  if (S.constraints.length !== before) {
+    log((before - S.constraints.length) + ' 個の拘束を削除しました（参照先の削除）');
+    renderConstraints();
+  }
   scheduleRedraw();
 }
 function entsOf(ids) { const set = new Set(ids); return S.entities.filter(e => set.has(e.id)); }
 function filterUnlocked(ids) {
-  const ok = entsOf(ids).filter(e => !layerOf(e).locked).map(e => e.id);
-  if (ok.length < ids.length) log((ids.length - ok.length) + ' 個はロック画層のため対象外です');
+  const ok = entsOf(ids).filter(e => !layerOf(e).locked && !(e.type === 'image' && e.locked)).map(e => e.id);
+  if (ok.length < ids.length) log((ids.length - ok.length) + ' 個はロック中（画層または画像ロック）のため対象外です');
   return ok;
 }
 function replaceEnts(newOnes) {
@@ -860,6 +1023,7 @@ function* cmdMOVE() {
   Engine.mutate();
   replaceEnts(entsOf(ids).map(e => translateEnt(e, to.x - base.x, to.y - base.y)));
   log(ids.length + ' 個を移動しました');
+  afterGeomEdit(ids);
 }
 function* cmdCOPY() {
   let ids = yield SEL('オブジェクトを選択:');
@@ -900,6 +1064,7 @@ function* cmdROTATE() {
   Engine.mutate();
   replaceEnts(entsOf(ids).map(e => rotateEnt(e, base, a)));
   log('回転角度: ' + fmt(deg(a)) + '°');
+  afterGeomEdit(ids);
 }
 function* cmdSCALE() {
   let ids = yield SEL('オブジェクトを選択:');
@@ -915,6 +1080,7 @@ function* cmdSCALE() {
   Engine.mutate();
   replaceEnts(entsOf(ids).map(e => scaleEnt(e, base, f)));
   log('尺度: ' + fmt(f));
+  afterGeomEdit(ids);
 }
 function* cmdMIRROR() {
   let ids = yield SEL('オブジェクトを選択:');
@@ -983,17 +1149,21 @@ function* cmdERASE() {
 function* cmdEXPLODE() {
   let ids = yield SEL('分解するオブジェクトを選択:');
   ids = filterUnlocked(ids);
-  const targets = entsOf(ids).filter(e => e.type === 'pline');
-  if (!targets.length) { log('分解できるオブジェクト（ポリライン）がありません'); return; }
+  const targets = entsOf(ids).filter(e => e.type === 'pline' || e.type === 'dim');
+  if (!targets.length) { log('分解できるオブジェクト（ポリライン・寸法）がありません'); return; }
   Engine.mutate();
   for (const e of targets) {
+    if (e.type === 'dim') {
+      for (const pe of dimToPrimitives(e)) addEntity(pe);
+      continue;
+    }
     for (const s of plineSegs(e)) {
       if (s.kind === 'line') addEntity({ type: 'line', layer: e.layer, color: e.color, x1: s.a.x, y1: s.a.y, x2: s.b.x, y2: s.b.y });
       else addEntity({ type: 'arc', layer: e.layer, color: e.color, cx: s.arc.cx, cy: s.arc.cy, r: s.arc.r, a0: s.arc.a0, a1: s.arc.a1 });
     }
   }
   removeIds(targets.map(t => t.id));
-  log(targets.length + ' 個のポリラインを分解しました');
+  log(targets.length + ' 個のオブジェクトを分解しました');
 }
 function* cmdZOOM() {
   const kw = yield KW('ズーム [図形範囲(E)/全体(A)/窓(W)] <E>:', ['E', 'A', 'W'], 'E');
@@ -1038,6 +1208,39 @@ const COMMANDS = {
   OFFSET:  { aliases: ['O'],          fn: cmdOFFSET },
   ERASE:   { aliases: ['E', 'DEL'],   fn: cmdERASE },
   EXPLODE: { aliases: ['X'],          fn: cmdEXPLODE },
+  TRIM:    { aliases: ['TR'],         fn: cmdTRIM },
+  EXTEND:  { aliases: ['EX'],         fn: cmdEXTEND },
+  FILLET:  { aliases: ['F'],          fn: cmdFILLET },
+  CHAMFER: { aliases: ['CHA'],        fn: cmdCHAMFER },
+  DIMLINEAR:   { aliases: ['DLI', 'DIMLIN'], fn: cmdDIMLINEAR },
+  DIMALIGNED:  { aliases: ['DAL'],    fn: cmdDIMALIGNED },
+  DIMRADIUS:   { aliases: ['DRA'],    fn: cmdDIMRADIUS },
+  DIMDIAMETER: { aliases: ['DDI'],    fn: cmdDIMDIAMETER },
+  DIMSTYLE:    { aliases: ['D', 'DST'], run: openDimStyleDialog },
+  GCCOINCIDENT:    { aliases: ['GCC'],  fn: cmdGCCOINCIDENT },
+  GCCOLLINEAR:     { aliases: ['GCL'],  fn: cmdGCCOLLINEAR },
+  GCCONCENTRIC:    { aliases: ['GCN'],  fn: cmdGCCONCENTRIC },
+  GCPARALLEL:      { aliases: ['GCP'],  fn: cmdGCPARALLEL },
+  GCPERPENDICULAR: { aliases: ['GCE'],  fn: cmdGCPERPENDICULAR },
+  GCHORIZONTAL:    { aliases: ['GCH'],  fn: cmdGCHORIZONTAL },
+  GCVERTICAL:      { aliases: ['GCV'],  fn: cmdGCVERTICAL },
+  GCTANGENT:       { aliases: ['GCT'],  fn: cmdGCTANGENT },
+  GCSYMMETRIC:     { aliases: ['GCS'],  fn: cmdGCSYMMETRIC },
+  GCEQUAL:         { aliases: ['GCQ'],  fn: cmdGCEQUAL },
+  GCMIDPOINT:      { aliases: ['GCM'],  fn: cmdGCMIDPOINT },
+  GCFIX:           { aliases: ['GCF'],  fn: cmdGCFIX },
+  DCHORIZONTAL: { aliases: ['DCH'],  fn: cmdDCHORIZONTAL },
+  DCVERTICAL:   { aliases: ['DCV'],  fn: cmdDCVERTICAL },
+  DCALIGNED:    { aliases: ['DCA'],  fn: cmdDCALIGNED },
+  DCANGLE:      { aliases: ['DCANG'], fn: cmdDCANGLE },
+  DCRADIUS:     { aliases: ['DCR'],  fn: cmdDCRADIUS },
+  DCDIAMETER:   { aliases: ['DCD'],  fn: cmdDCDIAMETER },
+  CONSOLVE:  { aliases: ['RESOLVE'], run: consolveNow },
+  CONDELETE: { aliases: ['DELCON'],  fn: cmdCONDELETE },
+  IMAGEATTACH: { aliases: ['IAT', 'IMAGE'], run: startImageAttach },
+  SAVEJSON: { aliases: ['SJ'], run: fileSaveJSON },
+  OPENJSON: { aliases: ['OJ'], run: fileOpenJSON },
+  SELFTEST: { aliases: ['CHECK'], run: runSelfCheckUI },
   ZOOM:    { aliases: ['Z'],          fn: cmdZOOM },
   PAN:     { aliases: ['P'],          fn: cmdPAN },
   DIST:    { aliases: ['DI'],         fn: cmdDIST },
@@ -1131,7 +1334,7 @@ function routeToReq(txt) {
     log('[' + (req.keywords || []).join('/') + '] のいずれかを入力してください', 'err');
   } else if (req.type === 'pan') {
     Engine.req = null; Engine.resume(null);
-  } else if (req.type === 'pickone' || req.type === 'select') {
+  } else if (['pickone', 'pickpt', 'refpt', 'select'].includes(req.type)) {
     log('オブジェクトをクリックで選択してください', 'err');
   }
 }
@@ -1203,7 +1406,7 @@ canvas.addEventListener('mousedown', ev => {
     S.panDrag = { sx, sy, ox: S.view.ox, oy: S.view.oy };
     return;
   }
-  if (req && ['point', 'dist', 'angle', 'pickone'].includes(req.type)) {
+  if (req && ['point', 'dist', 'angle', 'pickone', 'pickpt', 'refpt'].includes(req.type)) {
     const eff = computeEffective(sx, sy, reqBase());
     const p = eff.pt;
     if (req.type === 'point') {
@@ -1224,6 +1427,19 @@ canvas.addEventListener('mousedown', ev => {
       const e = hitAt(sx, sy);
       if (e) { Engine.req = null; Engine.resume(e.id); }
       else log('オブジェクトが見つかりません');
+    } else if (req.type === 'pickpt') {
+      const e = hitAt(sx, sy);
+      if (e) { Engine.req = null; Engine.resume({ id: e.id, pt: s2w(sx, sy) }); }
+      else log('オブジェクトが見つかりません');
+    } else if (req.type === 'refpt') {
+      const e = hitAt(sx, sy);
+      if (!e) { log('オブジェクトが見つかりません'); }
+      else if (!Solver.constrainable(e)) { log('このオブジェクトには拘束を設定できません（線分・円・円弧・点のみ）'); }
+      else {
+        const ref = nearestRefPoint(e, s2w(sx, sy));
+        Engine.req = null;
+        Engine.resume(Object.assign({ entId: e.id }, ref));
+      }
     }
     scheduleRedraw();
     return;
@@ -1321,6 +1537,7 @@ function zoomExtents(includeOrigin) {
 document.addEventListener('keydown', ev => {
   const typing = ev.target === elInput || ['INPUT', 'SELECT', 'TEXTAREA'].includes(ev.target.tagName);
   if (ev.key === 'Escape') {
+    if (!document.getElementById('modal-back').hidden) { closeModal(); return; }
     if (Engine.gen) Engine.cancel();
     else { S.sel.clear(); S.boxAnchor = null; S.selBox = null; selChanged(); }
     elInput.value = '';
@@ -1504,7 +1721,7 @@ function renderProps() {
   }
   const head = document.createElement('div');
   head.className = 'props-head';
-  const typeNames = { line: '線分', circle: '円', arc: '円弧', pline: 'ポリライン', text: '文字', point: '点' };
+  const typeNames = { line: '線分', circle: '円', arc: '円弧', pline: 'ポリライン', text: '文字', point: '点', dim: '寸法', image: '画像' };
   head.textContent = ents.length === 1 ? (typeNames[ents[0].type] || ents[0].type) : ents.length + ' 個選択';
   body.appendChild(head);
   // 画層
@@ -1558,6 +1775,12 @@ function renderProps() {
     else if (e.type === 'pline') rows.push(['頂点数', String(e.pts.length)], ['閉じる', e.closed ? 'はい' : 'いいえ']);
     else if (e.type === 'text') rows.push(['挿入点', fmt(e.x) + ', ' + fmt(e.y)], ['高さ', fmt(e.h)], ['内容', e.str]);
     else if (e.type === 'point') rows.push(['位置', fmt(e.x) + ', ' + fmt(e.y)]);
+    else if (e.type === 'dim') {
+      const dtypeNames = { linear: '長さ寸法', aligned: '平行寸法', radius: '半径寸法', diameter: '直径寸法' };
+      rows.push(['種類', dtypeNames[e.dtype] || e.dtype], ['計測値', fmtPrec(dimMeasure(e), 4)], ['表示', dimTextOf(e)]);
+    } else if (e.type === 'image') {
+      rows.push(['挿入点', fmt(e.x) + ', ' + fmt(e.y)], ['ファイル', e.name || e.src]);
+    }
     for (const [k, v] of rows) {
       const r = document.createElement('div');
       r.className = 'props-row ro';
@@ -1566,7 +1789,87 @@ function renderProps() {
       r.querySelector('span').textContent = v;
       body.appendChild(r);
     }
+    if (e.type === 'dim') renderDimProps(body, e);
+    if (e.type === 'image') renderImageProps(body, e);
   }
+  renderSelectionConstraints(body, ents);
+}
+/* 寸法の編集可能プロパティ */
+function renderDimProps(body, e) {
+  // スタイル選択
+  const row = document.createElement('div'); row.className = 'props-row';
+  row.innerHTML = '<label>スタイル</label>';
+  const sel = document.createElement('select');
+  for (const st of S.dimStyles) {
+    const o = document.createElement('option');
+    o.value = st.name; o.textContent = st.name;
+    if ((e.style || S.curDimStyle) === st.name) o.selected = true;
+    sel.appendChild(o);
+  }
+  sel.onchange = () => { pushHistory(); e.style = sel.value; scheduleRedraw(); renderProps(); };
+  row.appendChild(sel);
+  body.appendChild(row);
+  // 文字上書き
+  const row2 = document.createElement('div'); row2.className = 'props-row';
+  row2.innerHTML = '<label>文字上書き</label>';
+  const inp = document.createElement('input');
+  inp.type = 'text';
+  inp.value = e.text || '';
+  inp.placeholder = '(自動)';
+  inp.onchange = () => { pushHistory(); e.text = inp.value || null; scheduleRedraw(); renderProps(); };
+  row2.appendChild(inp);
+  body.appendChild(row2);
+}
+/* 画像の編集可能プロパティ */
+function renderImageProps(body, e) {
+  const numRow = (label, get, set, step) => {
+    const row = document.createElement('div'); row.className = 'props-row';
+    row.innerHTML = '<label></label>';
+    row.querySelector('label').textContent = label;
+    const inp = document.createElement('input');
+    inp.type = 'number'; inp.step = step || 'any';
+    inp.value = get();
+    inp.onchange = () => {
+      const v = parseFloat(inp.value);
+      if (!Number.isFinite(v)) { inp.value = get(); return; }
+      pushHistory(); set(v); scheduleRedraw(); renderProps();
+    };
+    row.appendChild(inp);
+    body.appendChild(row);
+  };
+  numRow('幅', () => fmt(e.w), v => { if (v > 0) { e.h = e.h * (v / e.w); e.w = v; } });
+  numRow('高さ', () => fmt(e.h), v => { if (v > 0) e.h = v; });
+  numRow('回転角', () => fmt(deg(e.rot || 0)), v => { e.rot = rad(v); });
+  // 不透明度
+  const rowO = document.createElement('div'); rowO.className = 'props-row';
+  rowO.innerHTML = '<label>不透明度</label>';
+  const rng = document.createElement('input');
+  rng.type = 'range'; rng.min = '0.1'; rng.max = '1'; rng.step = '0.05';
+  rng.value = e.opacity != null ? e.opacity : 1;
+  rng.oninput = () => { e.opacity = parseFloat(rng.value); scheduleRedraw(); };
+  rng.onchange = () => { S.dirty = true; updateTitle(); };
+  rowO.appendChild(rng);
+  body.appendChild(rowO);
+  // ロック
+  const rowL = document.createElement('div'); rowL.className = 'props-row';
+  rowL.innerHTML = '<label>ロック</label>';
+  const chk = document.createElement('input');
+  chk.type = 'checkbox';
+  chk.checked = !!e.locked;
+  chk.onchange = () => { pushHistory(); e.locked = chk.checked; scheduleRedraw(); renderProps(); };
+  rowL.appendChild(chk);
+  body.appendChild(rowL);
+}
+/* 選択オブジェクトに関連する拘束一覧 */
+function renderSelectionConstraints(body, ents) {
+  const idSet = new Set(ents.map(e => e.id));
+  const cons = S.constraints.filter(c => c.refs.some(rf => idSet.has(rf.id)));
+  if (!cons.length) return;
+  const sub = document.createElement('div');
+  sub.className = 'props-sub';
+  sub.textContent = '拘束 (' + cons.length + ')';
+  body.appendChild(sub);
+  for (const c of cons) body.appendChild(constraintRow(c));
 }
 
 /* ================================================================ ファイル */
@@ -1580,7 +1883,11 @@ function fileNew() {
   S.dirty = false;
   S.fileName = 'drawing.dxf';
   S.nextId = 1;
-  updateTitle(); renderLayers(); renderProps();
+  S.constraints = []; S.nextCid = 1; S.conStatus = null;
+  S.dimStyles = [{ name: 'STANDARD', textH: 3.5, arrow: 2.5, extOffset: 0.8, extBeyond: 1.25, gap: 1, prec: 2, scale: 1 }];
+  S.curDimStyle = 'STANDARD';
+  S.imageData = {};
+  updateTitle(); renderLayers(); renderProps(); renderConstraints();
   zoomExtents();
   log('新規図面を作成しました');
 }
@@ -1620,7 +1927,9 @@ elFile.addEventListener('change', () => {
       S.undoStack = []; S.redoStack = [];
       S.dirty = false;
       S.fileName = f.name.replace(/\.[^.]+$/, '') + '.dxf';
-      updateTitle(); renderLayers(); renderProps();
+      S.constraints = []; S.nextCid = 1; S.conStatus = null;
+      S.imageData = {};
+      updateTitle(); renderLayers(); renderProps(); renderConstraints();
       zoomExtents();
       log(f.name + ' を読み込みました（' + res.entities.length + ' オブジェクト、' + S.layers.length + ' 画層）');
       if (res.skipped) toast('未対応エンティティ ' + res.skipped + ' 個をスキップしました（ブロック参照・ハッチング・スプライン等）');
@@ -1634,7 +1943,15 @@ elFile.addEventListener('change', () => {
 });
 function fileSave() {
   try {
-    const text = writeDXF({ layers: S.layers, entities: S.entities });
+    // 寸法は線分+文字に分解、画像・拘束は DXF に保持できないため除外（JSON 保存で保持）
+    const exp = [];
+    let nDim = 0, nImg = 0;
+    for (const e of S.entities) {
+      if (e.type === 'dim') { nDim++; for (const pe of dimToPrimitives(e)) exp.push(pe); }
+      else if (e.type === 'image') nImg++;
+      else exp.push(e);
+    }
+    const text = writeDXF({ layers: S.layers, entities: exp });
     const blob = new Blob([text], { type: 'application/dxf' });
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
@@ -1643,8 +1960,13 @@ function fileSave() {
     setTimeout(() => URL.revokeObjectURL(a.href), 5000);
     S.dirty = false;
     updateTitle();
-    log(a.download + ' に書き出しました（DXF R12、' + S.entities.length + ' オブジェクト）');
-    toast('DXF を書き出しました');
+    log(a.download + ' に書き出しました（DXF R12、' + exp.length + ' オブジェクト）');
+    const notes = [];
+    if (nDim) notes.push('寸法 ' + nDim + ' 個は線分・文字に分解');
+    if (nImg) notes.push('画像 ' + nImg + ' 個は除外');
+    if (S.constraints.length) notes.push('拘束 ' + S.constraints.length + ' 個は除外');
+    if (notes.length) toast('DXF 書き出し: ' + notes.join(' / ') + '（完全な状態は JSON 保存を使用）');
+    else toast('DXF を書き出しました');
   } catch (err) {
     console.error(err);
     toast('書き出しに失敗しました: ' + err.message, 'error');
@@ -1674,11 +1996,1277 @@ document.querySelectorAll('[data-toggle]').forEach(btn => {
   btn.addEventListener('click', () => toggleSetting(btn.dataset.toggle));
 });
 
+/* ================================================================ 編集コマンド (TRIM / EXTEND / FILLET / CHAMFER) */
+function segParam(a, b, p) {
+  const dx = b.x - a.x, dy = b.y - a.y;
+  const L2 = dx * dx + dy * dy;
+  if (L2 < 1e-12) return 0;
+  return ((p.x - a.x) * dx + (p.y - a.y) * dy) / L2;
+}
+/* 対象と切り取りエッジ群の交点を集める */
+function collectIntPts(e, cutters) {
+  const pts = [];
+  const mySegs = entIntSegs(e);
+  for (const c of cutters) {
+    if (c.id === e.id) continue;
+    for (const s1 of mySegs) for (const s2 of entIntSegs(c))
+      for (const p of segInts(s1, s2)) pts.push(p);
+  }
+  return pts;
+}
+/* トリム: クリック位置を含む区間を除去した結果を返す（純関数） */
+function trimPieces(e, cutters, click) {
+  const pts = collectIntPts(e, cutters);
+  if (e.type === 'line') {
+    const a = { x: e.x1, y: e.y1 }, b = { x: e.x2, y: e.y2 };
+    const ts = pts.map(p => segParam(a, b, p)).filter(t => t > 1e-6 && t < 1 - 1e-6).sort((x, y) => x - y);
+    if (!ts.length) return { err: '切り取りエッジとの交点がありません' };
+    const tc = Math.max(0, Math.min(1, segParam(a, b, click)));
+    let lo = 0, hi = 1;
+    for (const t of ts) { if (t <= tc) lo = t; else { hi = t; break; } }
+    const mk = (t0, t1) => ({
+      type: 'line', layer: e.layer, color: e.color,
+      x1: a.x + (b.x - a.x) * t0, y1: a.y + (b.y - a.y) * t0,
+      x2: a.x + (b.x - a.x) * t1, y2: a.y + (b.y - a.y) * t1
+    });
+    const add = [];
+    if (lo > 1e-6) add.push(mk(0, lo));
+    if (hi < 1 - 1e-6) add.push(mk(hi, 1));
+    return { add };
+  }
+  if (e.type === 'circle') {
+    const angs = pts.map(p => Math.atan2(p.y - e.cy, p.x - e.cx));
+    const uniq = [];
+    for (const t of angs) if (!uniq.some(u => Math.abs(ccwSpan(u, t)) < 1e-6 || Math.abs(ccwSpan(t, u)) < 1e-6)) uniq.push(t);
+    if (uniq.length < 2) return { err: '円をトリムするには交点が 2 つ以上必要です' };
+    const ac = Math.atan2(click.y - e.cy, click.x - e.cx);
+    let lo = null, hi = null, loSpan = Infinity, hiSpan = Infinity;
+    for (const t of uniq) {
+      const s1 = ccwSpan(t, ac), s2 = ccwSpan(ac, t);
+      if (s1 < loSpan) { loSpan = s1; lo = t; }
+      if (s2 < hiSpan) { hiSpan = s2; hi = t; }
+    }
+    return { add: [{ type: 'arc', layer: e.layer, color: e.color, cx: e.cx, cy: e.cy, r: e.r, a0: hi, a1: lo }] };
+  }
+  if (e.type === 'arc') {
+    const span = ccwSpan(e.a0, e.a1);
+    const sOf = p => ccwSpan(e.a0, Math.atan2(p.y - e.cy, p.x - e.cx));
+    const ss = pts.map(sOf).filter(s => s > 1e-6 && s < span - 1e-6).sort((x, y) => x - y);
+    if (!ss.length) return { err: '切り取りエッジとの交点がありません' };
+    const sc = sOf(click);
+    let lo = 0, hi = span;
+    for (const s of ss) { if (s <= sc) lo = s; else { hi = s; break; } }
+    const add = [];
+    if (lo > 1e-6) add.push({ type: 'arc', layer: e.layer, color: e.color, cx: e.cx, cy: e.cy, r: e.r, a0: e.a0, a1: e.a0 + lo });
+    if (hi < span - 1e-6) add.push({ type: 'arc', layer: e.layer, color: e.color, cx: e.cx, cy: e.cy, r: e.r, a0: e.a0 + hi, a1: e.a1 });
+    return { add };
+  }
+  return { err: 'トリムできるのは線分・円・円弧のみです（ポリラインは分解してください）' };
+}
+/* 延長: クリックに近い端を境界エッジまで延長した結果を返す（純関数） */
+function extendTarget(e, boundaries, click) {
+  if (e.type === 'line') {
+    const a = { x: e.x1, y: e.y1 }, b = { x: e.x2, y: e.y2 };
+    const extEnd = dist(click, b) < dist(click, a) ? 'b' : 'a';
+    const cand = [];
+    for (const bd of boundaries) {
+      if (bd.id === e.id) continue;
+      for (const s of entIntSegs(bd)) {
+        let ps = [];
+        if (s.kind === 'line') {
+          const p = lineLineInt(a, b, s.a, s.b, false);
+          if (p) {
+            const u = segParam(s.a, s.b, p);
+            if (u >= -1e-9 && u <= 1 + 1e-9) ps = [p];
+          }
+        } else {
+          const C = s.kind === 'circle' ? { c: s.c, r: s.r, arc: null } : { c: { x: s.arc.cx, y: s.arc.cy }, r: s.arc.r, arc: s.arc };
+          ps = lineCircleInt(a, b, C.c, C.r, false).filter(p => !C.arc || arcContains(C.arc, Math.atan2(p.y - C.c.y, p.x - C.c.x)));
+        }
+        for (const p of ps) {
+          const t = segParam(a, b, p);
+          if (extEnd === 'b' && t > 1 + 1e-9) cand.push({ t, p });
+          if (extEnd === 'a' && t < -1e-9) cand.push({ t, p });
+        }
+      }
+    }
+    if (!cand.length) return { err: '延長方向に境界エッジとの交点がありません' };
+    const best = extEnd === 'b'
+      ? cand.reduce((m, c) => (c.t < m.t ? c : m))
+      : cand.reduce((m, c) => (c.t > m.t ? c : m));
+    const ne = clone(e);
+    if (extEnd === 'b') { ne.x2 = best.p.x; ne.y2 = best.p.y; }
+    else { ne.x1 = best.p.x; ne.y1 = best.p.y; }
+    return { ent: ne };
+  }
+  if (e.type === 'arc') {
+    const pa0 = arcPoint(e, e.a0), pa1 = arcPoint(e, e.a1);
+    const end = dist(click, pa1) < dist(click, pa0) ? 'a1' : 'a0';
+    const cand = [];
+    for (const bd of boundaries) {
+      if (bd.id === e.id) continue;
+      for (const s of entIntSegs(bd)) {
+        let ps = [];
+        if (s.kind === 'line') ps = lineCircleInt(s.a, s.b, { x: e.cx, y: e.cy }, e.r, true);
+        else {
+          const C = s.kind === 'circle' ? { c: s.c, r: s.r, arc: null } : { c: { x: s.arc.cx, y: s.arc.cy }, r: s.arc.r, arc: s.arc };
+          ps = circleCircleInt({ x: e.cx, y: e.cy }, e.r, C.c, C.r).filter(p => !C.arc || arcContains(C.arc, Math.atan2(p.y - C.c.y, p.x - C.c.x)));
+        }
+        for (const p of ps) {
+          const ang = Math.atan2(p.y - e.cy, p.x - e.cx);
+          if (arcContains(e, ang)) continue;
+          if (end === 'a1') cand.push({ d: ccwSpan(e.a1, ang), ang });
+          else cand.push({ d: ccwSpan(ang, e.a0), ang });
+        }
+      }
+    }
+    const ok = cand.filter(c => c.d > 1e-9);
+    if (!ok.length) return { err: '延長方向に境界エッジとの交点がありません' };
+    const best = ok.reduce((m, c) => (c.d < m.d ? c : m));
+    const ne = clone(e);
+    if (end === 'a1') ne.a1 = best.ang; else ne.a0 = best.ang;
+    return { ent: ne };
+  }
+  return { err: '延長できるのは線分・円弧のみです' };
+}
+/* フィレット計算（純関数）: e1/e2 は line、c1/c2 は残す側のクリック点 */
+function filletCompute(e1, c1, e2, c2, r) {
+  const a1 = { x: e1.x1, y: e1.y1 }, b1 = { x: e1.x2, y: e1.y2 };
+  const a2 = { x: e2.x1, y: e2.y1 }, b2 = { x: e2.x2, y: e2.y2 };
+  const X = lineLineInt(a1, b1, a2, b2, false);
+  if (!X) return { err: '2 本の線分が平行のため処理できません' };
+  const mkU = (a, b, click) => {
+    const L = dist(a, b);
+    if (L < 1e-9) return null;
+    const u = { x: (b.x - a.x) / L, y: (b.y - a.y) / L };
+    const s = Math.sign((click.x - X.x) * u.x + (click.y - X.y) * u.y) || 1;
+    return { x: u.x * s, y: u.y * s };
+  };
+  const u1 = mkU(a1, b1, c1), u2 = mkU(a2, b2, c2);
+  if (!u1 || !u2) return { err: '線分の長さが 0 です' };
+  const cosPhi = u1.x * u2.x + u1.y * u2.y;
+  const phi = Math.acos(Math.max(-1, Math.min(1, cosPhi)));
+  if (phi < 1e-6 || Math.PI - phi < 1e-6) return { err: '2 線分の角度が小さすぎます' };
+  const tLen = r / Math.tan(phi / 2);
+  const farEnd = (a, b, u) => {
+    const pa = (a.x - X.x) * u.x + (a.y - X.y) * u.y;
+    const pb = (b.x - X.x) * u.x + (b.y - X.y) * u.y;
+    return pa > pb ? { p: a, proj: pa } : { p: b, proj: pb };
+  };
+  const f1 = farEnd(a1, b1, u1), f2 = farEnd(a2, b2, u2);
+  if (tLen > f1.proj - 1e-9 || tLen > f2.proj - 1e-9) return { err: '半径（距離）が大きすぎます' };
+  const t1 = { x: X.x + u1.x * tLen, y: X.y + u1.y * tLen };
+  const t2 = { x: X.x + u2.x * tLen, y: X.y + u2.y * tLen };
+  let arc = null;
+  if (r > 1e-9) {
+    const bis = { x: u1.x + u2.x, y: u1.y + u2.y };
+    const bl = Math.hypot(bis.x, bis.y);
+    if (bl < 1e-9) return { err: '角度が 180° に近すぎます' };
+    const C = { x: X.x + bis.x / bl * (r / Math.sin(phi / 2)), y: X.y + bis.y / bl * (r / Math.sin(phi / 2)) };
+    let aa = Math.atan2(t1.y - C.y, t1.x - C.x), ab = Math.atan2(t2.y - C.y, t2.x - C.x);
+    if (ccwSpan(aa, ab) > Math.PI) { const t = aa; aa = ab; ab = t; }
+    arc = { cx: C.x, cy: C.y, r, a0: aa, a1: ab };
+  }
+  return { X, t1, t2, f1: f1.p, f2: f2.p, arc };
+}
+/* 面取り計算（純関数）: 距離 d1, d2 */
+function chamferCompute(e1, c1, e2, c2, d1, d2) {
+  const base = filletCompute(e1, c1, e2, c2, 0);
+  if (base.err) return base;
+  const X = base.X;
+  const u = (t, X0) => {
+    const L = dist(X0, t) || 1;
+    return { x: (t.x - X0.x) / L, y: (t.y - X0.y) / L };
+  };
+  // filletCompute(r=0) の t1/t2 は X に一致するため、u は farEnd 方向から取り直す
+  const u1 = u(base.f1, X), u2 = u(base.f2, X);
+  const proj1 = (base.f1.x - X.x) * u1.x + (base.f1.y - X.y) * u1.y;
+  const proj2 = (base.f2.x - X.x) * u2.x + (base.f2.y - X.y) * u2.y;
+  if (d1 > proj1 - 1e-9 || d2 > proj2 - 1e-9) return { err: '面取り距離が大きすぎます' };
+  const q1 = { x: X.x + u1.x * d1, y: X.y + u1.y * d1 };
+  const q2 = { x: X.x + u2.x * d2, y: X.y + u2.y * d2 };
+  return { X, t1: q1, t2: q2, f1: base.f1, f2: base.f2 };
+}
+function* pickEnt(prompt, types, typeMsg) {
+  while (true) {
+    const id = yield PICK(prompt);
+    if (id == null) return null;
+    const e = S.entities.find(x => x.id === id);
+    if (!e) continue;
+    if (types && !types.includes(e.type)) { log(typeMsg || '対象外のオブジェクトです'); continue; }
+    if (layerOf(e).locked) { log('ロック画層のオブジェクトです'); continue; }
+    return e;
+  }
+}
+function* cmdTRIM() {
+  let ids = yield SEL('切り取りエッジを選択 (Enter=すべてのオブジェクト):');
+  const useAll = !ids.length;
+  if (useAll) log('すべてのオブジェクトを切り取りエッジとして使用します');
+  let n = 0;
+  while (true) {
+    const res = yield PICKPT('トリムするオブジェクトを選択 <終了>:');
+    if (!res) break;
+    const e = S.entities.find(x => x.id === res.id);
+    if (!e) continue;
+    if (layerOf(e).locked) { log('ロック画層のオブジェクトです'); continue; }
+    const cutters = useAll ? visibleEntities() : entsOf(ids);
+    const r = trimPieces(e, cutters, res.pt);
+    if (r.err) { log(r.err); continue; }
+    Engine.mutate();
+    for (const ne of r.add) { ne.id = S.nextId++; S.entities.push(ne); }
+    removeIds([e.id]);
+    n++;
+    scheduleRedraw();
+  }
+  if (n) log(n + ' 個をトリムしました');
+}
+function* cmdEXTEND() {
+  let ids = yield SEL('境界エッジを選択 (Enter=すべてのオブジェクト):');
+  const useAll = !ids.length;
+  if (useAll) log('すべてのオブジェクトを境界エッジとして使用します');
+  let n = 0;
+  while (true) {
+    const res = yield PICKPT('延長するオブジェクトを選択（延長する側をクリック）<終了>:');
+    if (!res) break;
+    const e = S.entities.find(x => x.id === res.id);
+    if (!e) continue;
+    if (layerOf(e).locked) { log('ロック画層のオブジェクトです'); continue; }
+    const boundaries = useAll ? visibleEntities() : entsOf(ids);
+    const r = extendTarget(e, boundaries, res.pt);
+    if (r.err) { log(r.err); continue; }
+    Engine.mutate();
+    replaceEnts([Object.assign(r.ent, { id: e.id })]);
+    n++;
+    afterGeomEdit([e.id]);
+    scheduleRedraw();
+  }
+  if (n) log(n + ' 個を延長しました');
+}
+function* cmdFILLET() {
+  log('現在のフィレット半径 = ' + fmt(S.filletR));
+  let first = null;
+  while (true) {
+    const res = yield PICKPT(first ? '2 本目の線分を選択:' : '1 本目の線分を選択 または [半径(R)]:', first ? {} : { keywords: ['R'] });
+    if (res == null) return;
+    if (res.kw === 'R') {
+      const r = yield DST('フィレット半径を指定 <' + fmt(S.filletR) + '>:', { def: S.filletR });
+      if (r != null && typeof r === 'number' && r >= 0) { S.filletR = r; log('フィレット半径 = ' + fmt(r)); }
+      continue;
+    }
+    const e = S.entities.find(x => x.id === res.id);
+    if (!e || e.type !== 'line') { log('線分を選択してください'); continue; }
+    if (layerOf(e).locked) { log('ロック画層のオブジェクトです'); continue; }
+    if (!first) { first = { e, pt: res.pt }; continue; }
+    if (first.e.id === e.id) { log('同じ線分です。別の線分を選択してください'); continue; }
+    const fc = filletCompute(first.e, first.pt, e, res.pt, S.filletR);
+    if (fc.err) { toast(fc.err, 'error'); first = null; continue; }
+    Engine.mutate();
+    const n1 = clone(first.e); n1.x1 = fc.t1.x; n1.y1 = fc.t1.y; n1.x2 = fc.f1.x; n1.y2 = fc.f1.y;
+    const n2 = clone(e); n2.x1 = fc.t2.x; n2.y1 = fc.t2.y; n2.x2 = fc.f2.x; n2.y2 = fc.f2.y;
+    replaceEnts([n1, n2]);
+    if (fc.arc) addEntity(Object.assign({ type: 'arc', layer: first.e.layer, color: first.e.color }, fc.arc));
+    log('フィレット完了 (R = ' + fmt(S.filletR) + ')');
+    afterGeomEdit([n1.id, n2.id]);
+    return;
+  }
+}
+function* cmdCHAMFER() {
+  log('現在の面取り距離 = ' + fmt(S.chamferD1) + ', ' + fmt(S.chamferD2));
+  let first = null;
+  while (true) {
+    const res = yield PICKPT(first ? '2 本目の線分を選択:' : '1 本目の線分を選択 または [距離(D)]:', first ? {} : { keywords: ['D'] });
+    if (res == null) return;
+    if (res.kw === 'D') {
+      const d1 = yield DST('1 本目の面取り距離を指定 <' + fmt(S.chamferD1) + '>:', { def: S.chamferD1 });
+      if (d1 == null || typeof d1 !== 'number' || d1 < 0) continue;
+      const d2 = yield DST('2 本目の面取り距離を指定 <' + fmt(d1) + '>:', { def: d1 });
+      S.chamferD1 = d1;
+      S.chamferD2 = (d2 != null && typeof d2 === 'number' && d2 >= 0) ? d2 : d1;
+      log('面取り距離 = ' + fmt(S.chamferD1) + ', ' + fmt(S.chamferD2));
+      continue;
+    }
+    const e = S.entities.find(x => x.id === res.id);
+    if (!e || e.type !== 'line') { log('線分を選択してください'); continue; }
+    if (layerOf(e).locked) { log('ロック画層のオブジェクトです'); continue; }
+    if (!first) { first = { e, pt: res.pt }; continue; }
+    if (first.e.id === e.id) { log('同じ線分です。別の線分を選択してください'); continue; }
+    const cc = chamferCompute(first.e, first.pt, e, res.pt, S.chamferD1, S.chamferD2);
+    if (cc.err) { toast(cc.err, 'error'); first = null; continue; }
+    Engine.mutate();
+    const n1 = clone(first.e); n1.x1 = cc.t1.x; n1.y1 = cc.t1.y; n1.x2 = cc.f1.x; n1.y2 = cc.f1.y;
+    const n2 = clone(e); n2.x1 = cc.t2.x; n2.y1 = cc.t2.y; n2.x2 = cc.f2.x; n2.y2 = cc.f2.y;
+    replaceEnts([n1, n2]);
+    if (dist(cc.t1, cc.t2) > 1e-9) addEntity({ type: 'line', layer: first.e.layer, color: first.e.color, x1: cc.t1.x, y1: cc.t1.y, x2: cc.t2.x, y2: cc.t2.y });
+    log('面取り完了 (' + fmt(S.chamferD1) + ', ' + fmt(S.chamferD2) + ')');
+    afterGeomEdit([n1.id, n2.id]);
+    return;
+  }
+}
+
+/* ================================================================ 寸法 */
+function dimStyleOf(e) {
+  return S.dimStyles.find(s => s.name === (e.style || S.curDimStyle)) || S.dimStyles[0];
+}
+function fmtPrec(n, prec) {
+  return Number(n).toFixed(Math.max(0, Math.min(6, prec == null ? 2 : prec)));
+}
+function dimMeasure(e) {
+  if (e.dtype === 'linear') {
+    const u = { x: Math.cos(e.ang || 0), y: Math.sin(e.ang || 0) };
+    return Math.abs((e.p2.x - e.p1.x) * u.x + (e.p2.y - e.p1.y) * u.y);
+  }
+  if (e.dtype === 'aligned') return dist(e.p1, e.p2);
+  if (e.dtype === 'radius') return e.r;
+  if (e.dtype === 'diameter') return 2 * e.r;
+  return 0;
+}
+function dimTextOf(e) {
+  if (e.text != null && e.text !== '') return e.text;
+  const st = dimStyleOf(e);
+  const pre = e.dtype === 'radius' ? 'R' : e.dtype === 'diameter' ? '⌀' : '';
+  return pre + fmtPrec(dimMeasure(e), st.prec);
+}
+/* 寸法エンティティ → 描画ジオメトリ {segs:[[a,b]], arrows:[{p,ang,size}], label:{p,ang,h,str}} */
+function dimGeometry(e) {
+  const st = dimStyleOf(e);
+  const k = st.scale || 1;
+  const AH = st.arrow * k, TH = st.textH * k, GAP = st.gap * k, EO = st.extOffset * k, EB = st.extBeyond * k;
+  const segs = [], arrows = [];
+  let label = null;
+  if (e.dtype === 'linear' || e.dtype === 'aligned') {
+    let u;
+    if (e.dtype === 'aligned') {
+      const L = dist(e.p1, e.p2);
+      u = L < 1e-12 ? { x: 1, y: 0 } : { x: (e.p2.x - e.p1.x) / L, y: (e.p2.y - e.p1.y) / L };
+    } else {
+      u = { x: Math.cos(e.ang || 0), y: Math.sin(e.ang || 0) };
+    }
+    const n = { x: -u.y, y: u.x };
+    const off1 = (e.pos.x - e.p1.x) * n.x + (e.pos.y - e.p1.y) * n.y;
+    const off2 = (e.pos.x - e.p2.x) * n.x + (e.pos.y - e.p2.y) * n.y;
+    const q1 = { x: e.p1.x + n.x * off1, y: e.p1.y + n.y * off1 };
+    const q2 = { x: e.p2.x + n.x * off2, y: e.p2.y + n.y * off2 };
+    const sg1 = Math.sign(off1) || 1, sg2 = Math.sign(off2) || 1;
+    if (Math.abs(off1) > EO) segs.push([{ x: e.p1.x + n.x * EO * sg1, y: e.p1.y + n.y * EO * sg1 }, { x: q1.x + n.x * EB * sg1, y: q1.y + n.y * EB * sg1 }]);
+    if (Math.abs(off2) > EO) segs.push([{ x: e.p2.x + n.x * EO * sg2, y: e.p2.y + n.y * EO * sg2 }, { x: q2.x + n.x * EB * sg2, y: q2.y + n.y * EB * sg2 }]);
+    segs.push([q1, q2]);
+    if (dist(q1, q2) > 1e-9) {
+      const ua = Math.atan2(q2.y - q1.y, q2.x - q1.x);
+      arrows.push({ p: q1, ang: ua + Math.PI, size: AH }, { p: q2, ang: ua, size: AH });
+      let la = ua;
+      if (Math.cos(la) < -1e-9 || (Math.abs(Math.cos(la)) < 1e-9 && Math.sin(la) < 0)) la += Math.PI;
+      const mid = { x: (q1.x + q2.x) / 2, y: (q1.y + q2.y) / 2 };
+      const ln = { x: -Math.sin(la), y: Math.cos(la) };
+      label = { p: { x: mid.x + ln.x * GAP, y: mid.y + ln.y * GAP }, ang: la, h: TH, str: dimTextOf(e) };
+    }
+  } else if (e.dtype === 'radius' || e.dtype === 'diameter') {
+    const c = e.p1;
+    const L = dist(c, e.pos);
+    const dir = L < 1e-12 ? { x: 1, y: 0 } : { x: (e.pos.x - c.x) / L, y: (e.pos.y - c.y) / L };
+    const pt = { x: c.x + dir.x * e.r, y: c.y + dir.y * e.r };
+    if (e.dtype === 'diameter') {
+      const p0 = { x: c.x - dir.x * e.r, y: c.y - dir.y * e.r };
+      segs.push([p0, e.pos]);
+      arrows.push({ p: p0, ang: Math.atan2(-dir.y, -dir.x), size: AH }, { p: pt, ang: Math.atan2(dir.y, dir.x), size: AH });
+    } else {
+      segs.push([c, e.pos]);
+      arrows.push({ p: pt, ang: Math.atan2(dir.y, dir.x), size: AH });
+    }
+    label = { p: { x: e.pos.x + dir.x * GAP, y: e.pos.y + dir.y * GAP + GAP }, ang: 0, h: TH, str: dimTextOf(e) };
+  }
+  return { segs, arrows, label };
+}
+/* 寸法 → DXF/分解用プリミティブ（線分 + 文字） */
+function dimToPrimitives(e) {
+  const geo = dimGeometry(e);
+  const out = [];
+  const base = { layer: e.layer, color: e.color };
+  for (const s of geo.segs) out.push(Object.assign({ type: 'line', x1: s[0].x, y1: s[0].y, x2: s[1].x, y2: s[1].y }, base));
+  for (const ar of geo.arrows) {
+    const L = ar.size;
+    const bx = ar.p.x - Math.cos(ar.ang) * L, by = ar.p.y - Math.sin(ar.ang) * L;
+    const px = -Math.sin(ar.ang) * L * 0.35, py = Math.cos(ar.ang) * L * 0.35;
+    out.push(Object.assign({ type: 'line', x1: ar.p.x, y1: ar.p.y, x2: bx + px, y2: by + py }, base));
+    out.push(Object.assign({ type: 'line', x1: ar.p.x, y1: ar.p.y, x2: bx - px, y2: by - py }, base));
+  }
+  if (geo.label) {
+    const w = geo.label.str.length * geo.label.h * 0.35;
+    out.push(Object.assign({
+      type: 'text',
+      x: geo.label.p.x - Math.cos(geo.label.ang) * w,
+      y: geo.label.p.y - Math.sin(geo.label.ang) * w,
+      h: geo.label.h, rot: geo.label.ang, str: geo.label.str
+    }, base));
+  }
+  return out;
+}
+function pickLinearAng(p1, p2, pos) {
+  const mid = { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 };
+  return Math.abs(pos.y - mid.y) >= Math.abs(pos.x - mid.x) ? 0 : Math.PI / 2;
+}
+function* cmdDIMLINEAR() {
+  const p1 = yield P('1 本目の補助線の起点を指定:');
+  if (!p1) return;
+  const p2 = yield P('2 本目の補助線の起点を指定:', { base: p1 });
+  if (!p2) return;
+  const pos = yield P('寸法線の位置を指定:', {
+    preview: (g, cur) => drawDimGeometry(g, dimGeometry({ type: 'dim', dtype: 'linear', p1, p2, pos: cur, ang: pickLinearAng(p1, p2, cur), style: S.curDimStyle }), '#9aa7b5')
+  });
+  if (!pos) return;
+  Engine.mutate();
+  addEntity({ type: 'dim', dtype: 'linear', p1: { x: p1.x, y: p1.y }, p2: { x: p2.x, y: p2.y }, pos: { x: pos.x, y: pos.y }, ang: pickLinearAng(p1, p2, pos), style: S.curDimStyle, text: null });
+}
+function* cmdDIMALIGNED() {
+  const p1 = yield P('1 本目の補助線の起点を指定:');
+  if (!p1) return;
+  const p2 = yield P('2 本目の補助線の起点を指定:', { base: p1 });
+  if (!p2) return;
+  const pos = yield P('寸法線の位置を指定:', {
+    preview: (g, cur) => drawDimGeometry(g, dimGeometry({ type: 'dim', dtype: 'aligned', p1, p2, pos: cur, style: S.curDimStyle }), '#9aa7b5')
+  });
+  if (!pos) return;
+  Engine.mutate();
+  addEntity({ type: 'dim', dtype: 'aligned', p1: { x: p1.x, y: p1.y }, p2: { x: p2.x, y: p2.y }, pos: { x: pos.x, y: pos.y }, style: S.curDimStyle, text: null });
+}
+function* dimRadial(dtype) {
+  const e = yield* pickEnt('円または円弧を選択:', ['circle', 'arc'], '円または円弧を選択してください');
+  if (!e) return;
+  const pos = yield P('寸法の配置位置を指定:', {
+    preview: (g, cur) => drawDimGeometry(g, dimGeometry({ type: 'dim', dtype, p1: { x: e.cx, y: e.cy }, r: e.r, pos: cur, style: S.curDimStyle }), '#9aa7b5')
+  });
+  if (!pos) return;
+  Engine.mutate();
+  addEntity({ type: 'dim', dtype, p1: { x: e.cx, y: e.cy }, r: e.r, pos: { x: pos.x, y: pos.y }, style: S.curDimStyle, text: null });
+}
+function* cmdDIMRADIUS() { yield* dimRadial('radius'); }
+function* cmdDIMDIAMETER() { yield* dimRadial('diameter'); }
+
+/* ---------------- 寸法スタイル ダイアログ ---------------- */
+const DIMSTYLE_FIELDS = [
+  ['textH', '文字高さ', 0.1], ['arrow', '矢印サイズ', 0.1], ['extOffset', '補助線オフセット', 0],
+  ['extBeyond', '補助線はみ出し', 0], ['gap', '文字と寸法線の間隔', 0], ['prec', '小数点以下桁数', 0], ['scale', '全体尺度', 0.01]
+];
+function openDimStyleDialog() {
+  const body = document.createElement('div');
+  // スタイル選択
+  const rowSel = document.createElement('div'); rowSel.className = 'modal-row';
+  rowSel.innerHTML = '<label>スタイル</label>';
+  const sel = document.createElement('select');
+  const rebuildSel = () => {
+    sel.innerHTML = '';
+    for (const st of S.dimStyles) {
+      const o = document.createElement('option');
+      o.value = st.name;
+      o.textContent = st.name + (st.name === S.curDimStyle ? ' (現在)' : '');
+      sel.appendChild(o);
+    }
+  };
+  rebuildSel();
+  rowSel.appendChild(sel);
+  body.appendChild(rowSel);
+  // 新規作成
+  const rowNew = document.createElement('div'); rowNew.className = 'modal-row';
+  rowNew.innerHTML = '<label>新規スタイル</label>';
+  const inpNew = document.createElement('input');
+  inpNew.type = 'text'; inpNew.placeholder = '新しいスタイル名';
+  const btnNew = document.createElement('button');
+  btnNew.textContent = '作成';
+  btnNew.style.flex = 'none';
+  btnNew.onclick = () => {
+    const name = inpNew.value.trim();
+    if (!name) return;
+    if (S.dimStyles.some(s => s.name === name)) { toast('同名のスタイルがあります', 'error'); return; }
+    pushHistory();
+    const cur = S.dimStyles.find(s => s.name === sel.value) || S.dimStyles[0];
+    S.dimStyles.push(Object.assign({}, cur, { name }));
+    inpNew.value = '';
+    rebuildSel();
+    sel.value = name;
+    fillFields();
+    log('寸法スタイルを作成しました: ' + name);
+  };
+  rowNew.appendChild(inpNew);
+  rowNew.appendChild(btnNew);
+  body.appendChild(rowNew);
+  // 各フィールド
+  const inputs = {};
+  for (const [key, label] of DIMSTYLE_FIELDS) {
+    const row = document.createElement('div'); row.className = 'modal-row';
+    const lab = document.createElement('label'); lab.textContent = label;
+    const inp = document.createElement('input');
+    inp.type = 'number'; inp.step = 'any';
+    inputs[key] = inp;
+    row.appendChild(lab); row.appendChild(inp);
+    body.appendChild(row);
+  }
+  const fillFields = () => {
+    const st = S.dimStyles.find(s => s.name === sel.value) || S.dimStyles[0];
+    for (const [key] of DIMSTYLE_FIELDS) inputs[key].value = st[key];
+  };
+  sel.onchange = fillFields;
+  fillFields();
+  showModal('寸法スタイル管理', body, [
+    {
+      label: '現在に設定', onClick: () => {
+        S.curDimStyle = sel.value;
+        rebuildSel(); sel.value = S.curDimStyle;
+        log('現在の寸法スタイル: ' + S.curDimStyle);
+      }
+    },
+    {
+      label: '選択寸法に適用', onClick: () => {
+        const dims = entsOf([...S.sel]).filter(e => e.type === 'dim');
+        if (!dims.length) { toast('寸法が選択されていません', 'error'); return; }
+        pushHistory();
+        for (const d of dims) d.style = sel.value;
+        scheduleRedraw(); renderProps();
+        log(dims.length + ' 個の寸法にスタイルを適用しました');
+      }
+    },
+    {
+      label: '保存', primary: true, onClick: () => {
+        const st = S.dimStyles.find(s => s.name === sel.value);
+        if (!st) return;
+        pushHistory();
+        for (const [key, , min] of DIMSTYLE_FIELDS) {
+          const v = parseFloat(inputs[key].value);
+          if (Number.isFinite(v) && v >= min) st[key] = key === 'prec' ? Math.round(v) : v;
+        }
+        scheduleRedraw();
+        log('寸法スタイルを更新しました: ' + st.name);
+      }
+    },
+    { label: '閉じる', onClick: (close) => close() }
+  ]);
+}
+
+/* ---------------- 汎用モーダル ---------------- */
+function showModal(title, bodyEl, buttons) {
+  const back = document.getElementById('modal-back');
+  const box = document.getElementById('modal-box');
+  box.innerHTML = '';
+  const head = document.createElement('div');
+  head.className = 'modal-head';
+  const ttl = document.createElement('span');
+  ttl.textContent = title;
+  const x = document.createElement('button');
+  x.textContent = '✕';
+  x.onclick = closeModal;
+  head.appendChild(ttl); head.appendChild(x);
+  const bodyWrap = document.createElement('div');
+  bodyWrap.className = 'modal-body';
+  bodyWrap.appendChild(bodyEl);
+  const foot = document.createElement('div');
+  foot.className = 'modal-foot';
+  for (const b of (buttons || [])) {
+    const btn = document.createElement('button');
+    btn.textContent = b.label;
+    if (b.primary) btn.className = 'primary';
+    btn.onclick = () => b.onClick(closeModal);
+    foot.appendChild(btn);
+  }
+  box.appendChild(head); box.appendChild(bodyWrap); box.appendChild(foot);
+  back.hidden = false;
+}
+function closeModal() {
+  const back = document.getElementById('modal-back');
+  back.hidden = true;
+  document.getElementById('modal-box').innerHTML = '';
+}
+
+/* ================================================================ 拘束 */
+const CON_KINDS = {
+  coincident: { jp: '一致' }, collinear: { jp: '同一線上' }, concentric: { jp: '同心円' },
+  parallel: { jp: '平行' }, perpendicular: { jp: '直交' }, horizontal: { jp: '水平' }, vertical: { jp: '垂直' },
+  tangent: { jp: '接線' }, symmetric: { jp: '対称' }, equal: { jp: '等値' }, midpoint: { jp: '中点' }, fix: { jp: '固定' },
+  hdist: { jp: '水平距離', dim: true }, vdist: { jp: '垂直距離', dim: true }, adist: { jp: '平行距離', dim: true },
+  angle: { jp: '角度', dim: true, unit: '°' }, radius: { jp: '半径', dim: true }, diameter: { jp: '直径', dim: true }
+};
+/* クリック位置に最も近い拘束参照点を返す */
+function nearestRefPoint(e, p) {
+  const cands = [];
+  if (e.type === 'line') {
+    cands.push({ pt: 'start', x: e.x1, y: e.y1 }, { pt: 'end', x: e.x2, y: e.y2 },
+      { pt: 'mid', x: (e.x1 + e.x2) / 2, y: (e.y1 + e.y2) / 2 });
+  } else if (e.type === 'circle') {
+    cands.push({ pt: 'center', x: e.cx, y: e.cy });
+  } else if (e.type === 'arc') {
+    const s = arcPoint(e, e.a0), t = arcPoint(e, e.a1);
+    cands.push({ pt: 'center', x: e.cx, y: e.cy }, { pt: 'start', x: s.x, y: s.y }, { pt: 'end', x: t.x, y: t.y });
+  } else {
+    cands.push({ pt: null, x: e.x, y: e.y });
+  }
+  let best = cands[0], bd = Infinity;
+  for (const c of cands) { const d = dist(p, c); if (d < bd) { bd = d; best = c; } }
+  return best;
+}
+function addConstraint(c) {
+  c.id = S.nextCid++;
+  Engine.mutate();
+  S.constraints.push(c);
+  log('拘束を追加: ' + CON_KINDS[c.kind].jp + ' (#' + c.id + ')');
+  solveConstraintsNow();
+}
+function solveConstraintsNow() {
+  if (!S.constraints.length) {
+    S.conStatus = null;
+    renderConstraints(); scheduleRedraw();
+    return null;
+  }
+  let r;
+  try { r = Solver.solve(S.entities, S.constraints); }
+  catch (err) { console.error(err); toast('ソルバーエラー: ' + err.message, 'error'); return null; }
+  if (r.converged) r.apply();
+  else toast('拘束を満たす解が見つかりません（矛盾拘束の可能性）。拘束パネルを確認してください。', 'error');
+  S.conStatus = r;
+  renderConstraints(); renderProps(); scheduleRedraw();
+  return r;
+}
+function consolveNow() {
+  if (!S.constraints.length) { log('拘束がありません'); return; }
+  pushHistory();
+  const r = solveConstraintsNow();
+  if (r) log('再計算: ' + (r.converged ? '収束' : '未収束') + '（反復 ' + r.iters + ' 回、最大残差 ' + r.maxRes.toExponential(2) + '）');
+}
+/* 修正コマンド後、拘束対象が動いた場合に再計算 */
+function afterGeomEdit(ids) {
+  if (!S.constraints.length) return;
+  const idSet = new Set(ids);
+  if (S.constraints.some(c => c.refs.some(rf => idSet.has(rf.id)))) solveConstraintsNow();
+}
+/* 拘束 1 行分の DOM（パネル・プロパティ共用） */
+function constraintRow(c) {
+  const meta = CON_KINDS[c.kind] || { jp: c.kind };
+  const row = document.createElement('div');
+  row.className = 'con-row';
+  const kind = document.createElement('span');
+  kind.className = 'con-kind';
+  kind.textContent = '#' + c.id + ' ' + meta.jp;
+  const ents = document.createElement('span');
+  ents.className = 'con-ents';
+  ents.textContent = c.refs.map(rf => 'ID' + rf.id + (rf.pt ? ':' + rf.pt : '')).join(', ');
+  ents.title = ents.textContent;
+  row.appendChild(kind);
+  row.appendChild(ents);
+  if (meta.dim) {
+    const inp = document.createElement('input');
+    inp.className = 'con-val';
+    inp.type = 'text';
+    inp.value = fmtPrec(c.value, 4).replace(/\.?0+$/, '') + (meta.unit || '');
+    inp.title = '拘束値を編集して Enter';
+    inp.onchange = () => {
+      const v = parseFloat(inp.value);
+      if (!Number.isFinite(v)) { inp.value = fmtPrec(c.value, 4); return; }
+      pushHistory();
+      c.value = v;
+      log('拘束 #' + c.id + ' の値を ' + v + ' に変更しました');
+      solveConstraintsNow();
+    };
+    row.appendChild(inp);
+  }
+  const del = document.createElement('button');
+  del.className = 'con-del';
+  del.textContent = '✕';
+  del.title = 'この拘束を削除';
+  del.onclick = () => {
+    pushHistory();
+    S.constraints = S.constraints.filter(x => x.id !== c.id);
+    log('拘束 #' + c.id + ' を削除しました');
+    solveConstraintsNow();
+  };
+  row.appendChild(del);
+  return row;
+}
+function renderConstraints() {
+  const stEl = document.getElementById('con-status');
+  const listEl = document.getElementById('con-list');
+  if (!stEl || !listEl) return;
+  const st = S.conStatus;
+  if (!S.constraints.length) {
+    stEl.innerHTML = '<span class="con-empty">拘束なし</span>';
+  } else if (!st) {
+    stEl.textContent = '拘束: ' + S.constraints.length + '（未計算 — 再計算を実行してください）';
+  } else {
+    let cls = 'con-ok', msg = '✔ 適合';
+    if (!st.converged) { cls = 'con-err'; msg = '✖ 矛盾拘束の疑い（収束せず、最大残差 ' + st.maxRes.toExponential(1) + '）'; }
+    else if (st.redundant > 0) { cls = 'con-warn'; msg = '⚠ 過拘束（冗長 ' + st.redundant + ' 式）'; }
+    else if (st.dof === 0) { msg = '✔ 完全拘束'; }
+    stEl.innerHTML = '';
+    const l1 = document.createElement('div');
+    l1.textContent = '拘束: ' + S.constraints.length + ' ／ 式: ' + st.nEqs + ' ／ 変数: ' + st.nVars;
+    const l2 = document.createElement('div');
+    l2.textContent = '未拘束自由度: ' + st.dof;
+    const l3 = document.createElement('div');
+    l3.className = cls;
+    l3.textContent = msg;
+    stEl.append(l1, l2, l3);
+  }
+  listEl.innerHTML = '';
+  for (const c of S.constraints) listEl.appendChild(constraintRow(c));
+}
+/* 寸法拘束の注釈をキャンバスに描画 */
+const CON_COLOR = '#c79bff';
+function drawConstraintAnnos(g) {
+  for (const c of S.constraints) {
+    const meta = CON_KINDS[c.kind];
+    if (!meta || !meta.dim || !c.pos) continue;
+    const ents = c.refs.map(rf => S.entities.find(e => e.id === rf.id));
+    if (ents.some(e => !e)) continue;
+    let pseudo = null;
+    if (c.kind === 'hdist' || c.kind === 'vdist' || c.kind === 'adist') {
+      const pA = Solver.refPointOf(ents[0], c.refs[0].pt);
+      const pB = Solver.refPointOf(ents[1], c.refs[1].pt);
+      if (!pA || !pB) continue;
+      pseudo = {
+        type: 'dim', dtype: c.kind === 'adist' ? 'aligned' : 'linear',
+        ang: c.kind === 'vdist' ? Math.PI / 2 : 0,
+        p1: pA, p2: pB, pos: c.pos, style: S.curDimStyle,
+        text: 'd' + c.id + '=' + fmtPrec(c.value, 2)
+      };
+    } else if (c.kind === 'radius' || c.kind === 'diameter') {
+      if (ents[0].cx == null) continue;
+      pseudo = {
+        type: 'dim', dtype: c.kind,
+        p1: { x: ents[0].cx, y: ents[0].cy }, r: ents[0].r, pos: c.pos, style: S.curDimStyle,
+        text: (c.kind === 'radius' ? 'R' : '⌀') + c.id + '=' + fmtPrec(c.value, 2)
+      };
+    } else if (c.kind === 'angle') {
+      const st = dimStyleOf({ style: S.curDimStyle });
+      drawDimGeometry(g, {
+        segs: [], arrows: [],
+        label: { p: c.pos, ang: 0, h: st.textH * (st.scale || 1), str: '∠' + c.id + '=' + fmtPrec(c.value, 2) + '°' }
+      }, CON_COLOR);
+      continue;
+    }
+    if (pseudo) drawDimGeometry(g, dimGeometry(pseudo), CON_COLOR);
+  }
+}
+/* ---------------- 幾何拘束コマンド ---------------- */
+function* pick2Lines(label) {
+  const e1 = yield* pickEnt('1 本目の線分を選択:', ['line'], '線分を選択してください');
+  if (!e1) return null;
+  const e2 = yield* pickEnt('2 本目の線分を選択:', ['line'], '線分を選択してください');
+  if (!e2) return null;
+  if (e1.id === e2.id) { log('同じオブジェクトです'); return null; }
+  return [e1, e2];
+}
+function* cmdGCCOINCIDENT() {
+  const a = yield REF('1 点目を指定（端点 / 中点 / 中心の近くをクリック）:');
+  if (!a) return;
+  const b = yield REF('2 点目を指定:');
+  if (!b) return;
+  if (a.entId === b.entId && a.pt === b.pt) { log('同じ点です'); return; }
+  addConstraint({ kind: 'coincident', refs: [{ id: a.entId, pt: a.pt }, { id: b.entId, pt: b.pt }] });
+}
+function* cmdGCPARALLEL() {
+  const p = yield* pick2Lines(); if (!p) return;
+  addConstraint({ kind: 'parallel', refs: [{ id: p[0].id }, { id: p[1].id }] });
+}
+function* cmdGCPERPENDICULAR() {
+  const p = yield* pick2Lines(); if (!p) return;
+  addConstraint({ kind: 'perpendicular', refs: [{ id: p[0].id }, { id: p[1].id }] });
+}
+function* cmdGCCOLLINEAR() {
+  const p = yield* pick2Lines(); if (!p) return;
+  addConstraint({ kind: 'collinear', refs: [{ id: p[0].id }, { id: p[1].id }] });
+}
+function* cmdGCCONCENTRIC() {
+  const e1 = yield* pickEnt('1 つ目の円 / 円弧を選択:', ['circle', 'arc'], '円または円弧を選択してください');
+  if (!e1) return;
+  const e2 = yield* pickEnt('2 つ目の円 / 円弧を選択:', ['circle', 'arc'], '円または円弧を選択してください');
+  if (!e2) return;
+  if (e1.id === e2.id) { log('同じオブジェクトです'); return; }
+  addConstraint({ kind: 'concentric', refs: [{ id: e1.id }, { id: e2.id }] });
+}
+function* cmdGCHORIZONTAL() {
+  const e = yield* pickEnt('水平にする線分を選択:', ['line'], '線分を選択してください');
+  if (!e) return;
+  addConstraint({ kind: 'horizontal', refs: [{ id: e.id }] });
+}
+function* cmdGCVERTICAL() {
+  const e = yield* pickEnt('垂直にする線分を選択:', ['line'], '線分を選択してください');
+  if (!e) return;
+  addConstraint({ kind: 'vertical', refs: [{ id: e.id }] });
+}
+function* cmdGCTANGENT() {
+  const e1 = yield* pickEnt('1 つ目のオブジェクトを選択（線分 / 円 / 円弧）:', ['line', 'circle', 'arc']);
+  if (!e1) return;
+  const e2 = yield* pickEnt('2 つ目のオブジェクトを選択（線分 / 円 / 円弧）:', ['line', 'circle', 'arc']);
+  if (!e2) return;
+  if (e1.id === e2.id) { log('同じオブジェクトです'); return; }
+  if (e1.type === 'line' && e2.type === 'line') { log('線分同士に接線拘束は設定できません'); return; }
+  const data = {};
+  if (e1.type === 'line' || e2.type === 'line') {
+    const ln = e1.type === 'line' ? e1 : e2;
+    const ci = e1.type === 'line' ? e2 : e1;
+    const dx = ln.x2 - ln.x1, dy = ln.y2 - ln.y1;
+    const n = Math.hypot(dx, dy) || 1;
+    data.s = Math.sign((dx * (ci.cy - ln.y1) - dy * (ci.cx - ln.x1)) / n) || 1;
+  } else {
+    const d = Math.hypot(e1.cx - e2.cx, e1.cy - e2.cy);
+    data.mode = Math.abs(d - (e1.r + e2.r)) <= Math.abs(d - Math.abs(e1.r - e2.r)) ? 'ext' : 'int';
+    data.sg = Math.sign(e1.r - e2.r) || 1;
+  }
+  addConstraint({ kind: 'tangent', refs: [{ id: e1.id }, { id: e2.id }], data });
+}
+function* cmdGCSYMMETRIC() {
+  const a = yield REF('対称にする 1 点目を指定:');
+  if (!a) return;
+  const b = yield REF('対称にする 2 点目を指定:');
+  if (!b) return;
+  const ax = yield* pickEnt('対称軸の線分を選択:', ['line'], '線分を選択してください');
+  if (!ax) return;
+  addConstraint({ kind: 'symmetric', refs: [{ id: a.entId, pt: a.pt }, { id: b.entId, pt: b.pt }, { id: ax.id }] });
+}
+function* cmdGCEQUAL() {
+  const e1 = yield* pickEnt('1 つ目のオブジェクトを選択（線分 / 円 / 円弧）:', ['line', 'circle', 'arc']);
+  if (!e1) return;
+  const e2 = yield* pickEnt('2 つ目のオブジェクトを選択:', ['line', 'circle', 'arc']);
+  if (!e2) return;
+  if (e1.id === e2.id) { log('同じオブジェクトです'); return; }
+  const isLine1 = e1.type === 'line', isLine2 = e2.type === 'line';
+  if (isLine1 !== isLine2) { log('等値拘束は 線分同士（長さ）または 円 / 円弧同士（半径）にのみ設定できます'); return; }
+  addConstraint({ kind: 'equal', refs: [{ id: e1.id }, { id: e2.id }] });
+}
+function* cmdGCMIDPOINT() {
+  const a = yield REF('中点に拘束する点を指定:');
+  if (!a) return;
+  const ln = yield* pickEnt('線分を選択:', ['line'], '線分を選択してください');
+  if (!ln) return;
+  addConstraint({ kind: 'midpoint', refs: [{ id: a.entId, pt: a.pt }, { id: ln.id }] });
+}
+function* cmdGCFIX() {
+  const a = yield REF('固定する点を指定（端点 / 中点 / 中心）:');
+  if (!a) return;
+  addConstraint({ kind: 'fix', refs: [{ id: a.entId, pt: a.pt }], data: { x: a.x, y: a.y } });
+}
+/* ---------------- 寸法拘束コマンド ---------------- */
+function* dcDist2(kind) {
+  const a = yield REF('1 点目を指定:');
+  if (!a) return;
+  const b = yield REF('2 点目を指定:');
+  if (!b) return;
+  if (a.entId === b.entId && a.pt === b.pt) { log('同じ点です'); return; }
+  const pA = { x: a.x, y: a.y }, pB = { x: b.x, y: b.y };
+  let cur;
+  if (kind === 'hdist') cur = Math.abs(pB.x - pA.x);
+  else if (kind === 'vdist') cur = Math.abs(pB.y - pA.y);
+  else cur = dist(pA, pB);
+  const pos = yield P('拘束注釈の配置位置を指定:');
+  if (!pos) return;
+  const vs = yield STR('拘束値を入力 <' + fmtPrec(cur, 4) + '>:', { def: '' });
+  let v = parseFloat(vs);
+  if (!Number.isFinite(v) || v < 0) v = cur;
+  const data = {};
+  if (kind === 'hdist') data.s = Math.sign(pB.x - pA.x) || 1;
+  if (kind === 'vdist') data.s = Math.sign(pB.y - pA.y) || 1;
+  addConstraint({ kind, refs: [{ id: a.entId, pt: a.pt }, { id: b.entId, pt: b.pt }], value: v, pos: { x: pos.x, y: pos.y }, data });
+}
+function* cmdDCHORIZONTAL() { yield* dcDist2('hdist'); }
+function* cmdDCVERTICAL() { yield* dcDist2('vdist'); }
+function* cmdDCALIGNED() { yield* dcDist2('adist'); }
+function* cmdDCANGLE() {
+  const p = yield* pick2Lines(); if (!p) return;
+  const d1 = { x: p[0].x2 - p[0].x1, y: p[0].y2 - p[0].y1 };
+  const d2 = { x: p[1].x2 - p[1].x1, y: p[1].y2 - p[1].y1 };
+  const cur = deg(Math.atan2(d1.x * d2.y - d1.y * d2.x, d1.x * d2.x + d1.y * d2.y));
+  const pos = yield P('拘束注釈の配置位置を指定:');
+  if (!pos) return;
+  const vs = yield STR('角度を入力（度） <' + fmtPrec(cur, 2) + '>:', { def: '' });
+  let v = parseFloat(vs);
+  if (!Number.isFinite(v)) v = cur;
+  addConstraint({ kind: 'angle', refs: [{ id: p[0].id }, { id: p[1].id }], value: v, pos: { x: pos.x, y: pos.y } });
+}
+function* dcRadial(kind) {
+  const e = yield* pickEnt('円または円弧を選択:', ['circle', 'arc'], '円または円弧を選択してください');
+  if (!e) return;
+  const cur = kind === 'radius' ? e.r : 2 * e.r;
+  const pos = yield P('拘束注釈の配置位置を指定:');
+  if (!pos) return;
+  const vs = yield STR('拘束値を入力 <' + fmtPrec(cur, 4) + '>:', { def: '' });
+  let v = parseFloat(vs);
+  if (!Number.isFinite(v) || v <= 0) v = cur;
+  addConstraint({ kind, refs: [{ id: e.id }], value: v, pos: { x: pos.x, y: pos.y } });
+}
+function* cmdDCRADIUS() { yield* dcRadial('radius'); }
+function* cmdDCDIAMETER() { yield* dcRadial('diameter'); }
+function* cmdCONDELETE() {
+  let ids = yield SEL('拘束を削除するオブジェクトを選択:');
+  if (!ids.length) { log('選択がありません'); return; }
+  const idSet = new Set(ids);
+  const del = S.constraints.filter(c => c.refs.some(rf => idSet.has(rf.id)));
+  if (!del.length) { log('選択オブジェクトに拘束はありません'); return; }
+  Engine.mutate();
+  const delSet = new Set(del.map(c => c.id));
+  S.constraints = S.constraints.filter(c => !delSet.has(c.id));
+  log(del.length + ' 個の拘束を削除しました');
+  solveConstraintsNow();
+}
+
+/* ================================================================ 画像下敷き */
+const elImgInput = document.getElementById('image-input');
+function startImageAttach() {
+  elImgInput.value = '';
+  elImgInput.click();
+}
+elImgInput.addEventListener('change', () => {
+  const f = elImgInput.files && elImgInput.files[0];
+  if (!f) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    const dataURL = String(reader.result);
+    const img = new Image();
+    img.onload = () => {
+      const key = 'img' + (S.nextImgKey++);
+      S.imageData[key] = dataURL;
+      IMG_CACHE[key] = img;
+      Engine.start('IMAGEATTACH', { fn: function* () { yield* placeImage(key, img.naturalWidth, img.naturalHeight, f.name); } });
+    };
+    img.onerror = () => toast('画像を読み込めませんでした', 'error');
+    img.src = dataURL;
+  };
+  reader.readAsDataURL(f);
+});
+function ghostRect(g, p, w, h) {
+  gline(g, p, { x: p.x + w, y: p.y });
+  gline(g, { x: p.x + w, y: p.y }, { x: p.x + w, y: p.y + h });
+  gline(g, { x: p.x + w, y: p.y + h }, { x: p.x, y: p.y + h });
+  gline(g, { x: p.x, y: p.y + h }, p);
+}
+function* placeImage(key, nw, nh, name) {
+  const asp = nh / nw;
+  const p = yield P('画像の挿入点（左下）を指定:', {
+    preview: (g, cur) => ghostRect(g, cur, 100, 100 * asp)
+  });
+  if (!p) { delete S.imageData[key]; delete IMG_CACHE[key]; return; }
+  const defW = 100;
+  const w = yield DST('画像の幅を指定 <' + fmt(defW) + '>:', {
+    base: p, def: defW,
+    preview: (g, cur) => ghostRect(g, p, Math.max(1e-6, dist(p, cur)), Math.max(1e-6, dist(p, cur)) * asp)
+  });
+  let width = (w != null && typeof w === 'number' && w > 0) ? w : defW;
+  Engine.mutate();
+  addEntity({ type: 'image', x: p.x, y: p.y, w: width, h: width * asp, rot: 0, opacity: 0.8, locked: false, src: key, name: name || '' });
+  log('画像を配置しました: ' + (name || key) + '（幅 ' + fmt(width) + '）');
+  toast('画像を配置しました。プロパティパネルで不透明度・ロックを設定できます');
+}
+
+/* ================================================================ JSON プロジェクト保存 / 復元 */
+const JSON_APP_TAG = 'WEBAPP_2DCAD';
+function buildJSONDoc() {
+  const usedImages = {};
+  for (const e of S.entities) if (e.type === 'image' && S.imageData[e.src]) usedImages[e.src] = S.imageData[e.src];
+  return {
+    app: JSON_APP_TAG, format: 'project', version: 1, savedAt: new Date().toISOString(),
+    fileName: S.fileName,
+    layers: clone(S.layers), clayer: S.clayer,
+    entities: clone(S.entities),
+    constraints: clone(S.constraints),
+    dimStyles: clone(S.dimStyles), curDimStyle: S.curDimStyle,
+    imageData: usedImages,
+    nextId: S.nextId, nextCid: S.nextCid, nextImgKey: S.nextImgKey
+  };
+}
+function validateJSONDoc(doc) {
+  return !!(doc && doc.app === JSON_APP_TAG && Array.isArray(doc.entities) && Array.isArray(doc.layers));
+}
+function applyJSONDoc(doc, srcName) {
+  S.entities = doc.entities || [];
+  S.layers = (doc.layers && doc.layers.length) ? doc.layers : [{ name: '0', color: 7, ltype: 'CONTINUOUS', on: true, locked: false }];
+  if (!S.layers.some(l => l.name === '0')) S.layers.unshift({ name: '0', color: 7, ltype: 'CONTINUOUS', on: true, locked: false });
+  S.clayer = (doc.clayer && S.layers.some(l => l.name === doc.clayer)) ? doc.clayer : '0';
+  S.constraints = doc.constraints || [];
+  S.dimStyles = (doc.dimStyles && doc.dimStyles.length) ? doc.dimStyles
+    : [{ name: 'STANDARD', textH: 3.5, arrow: 2.5, extOffset: 0.8, extBeyond: 1.25, gap: 1, prec: 2, scale: 1 }];
+  S.curDimStyle = (doc.curDimStyle && S.dimStyles.some(s => s.name === doc.curDimStyle)) ? doc.curDimStyle : S.dimStyles[0].name;
+  S.imageData = doc.imageData || {};
+  for (const k of Object.keys(IMG_CACHE)) delete IMG_CACHE[k];
+  let maxId = 0, maxCid = 0;
+  for (const e of S.entities) maxId = Math.max(maxId, e.id || 0);
+  for (const c of S.constraints) maxCid = Math.max(maxCid, c.id || 0);
+  S.nextId = Math.max(doc.nextId || 1, maxId + 1);
+  S.nextCid = Math.max(doc.nextCid || 1, maxCid + 1);
+  S.nextImgKey = doc.nextImgKey || (Object.keys(S.imageData).length + 1);
+  S.sel.clear();
+  S.undoStack = []; S.redoStack = [];
+  S.dirty = false;
+  S.conStatus = null;
+  S.fileName = doc.fileName || (srcName ? srcName.replace(/\.json$/i, '') + '.dxf' : 'drawing.dxf');
+  updateTitle(); renderLayers(); renderProps(); renderConstraints();
+  zoomExtents();
+}
+function fileSaveJSON() {
+  try {
+    const doc = buildJSONDoc();
+    const blob = new Blob([JSON.stringify(doc)], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = (S.fileName || 'drawing.dxf').replace(/\.dxf$/i, '') + '.json';
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+    S.dirty = false;
+    updateTitle();
+    log(a.download + ' に保存しました（JSON プロジェクト: ' + doc.entities.length + ' オブジェクト、拘束 ' + doc.constraints.length + '、画像 ' + Object.keys(doc.imageData).length + '）');
+    toast('JSON プロジェクトを保存しました（寸法・画像・拘束を含む）');
+  } catch (err) {
+    console.error(err);
+    toast('JSON 保存に失敗しました: ' + err.message, 'error');
+  }
+}
+const elJsonInput = document.getElementById('json-input');
+function fileOpenJSON() {
+  if (S.dirty && !confirm('未保存の変更があります。破棄して別のプロジェクトを開きますか？')) return;
+  elJsonInput.value = '';
+  elJsonInput.click();
+}
+elJsonInput.addEventListener('change', () => {
+  const f = elJsonInput.files && elJsonInput.files[0];
+  if (!f) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    try {
+      const doc = JSON.parse(String(reader.result));
+      if (!validateJSONDoc(doc)) { toast('WEBAPP_2DCAD の JSON プロジェクトではありません', 'error'); return; }
+      applyJSONDoc(doc, f.name);
+      log(f.name + ' を読み込みました（' + S.entities.length + ' オブジェクト、拘束 ' + S.constraints.length + '、寸法スタイル ' + S.dimStyles.length + '）');
+      toast('JSON プロジェクトを読み込みました');
+      if (S.constraints.length) solveConstraintsNow();
+    } catch (err) {
+      console.error(err);
+      toast('JSON の読み込みに失敗しました: ' + err.message, 'error');
+    }
+  };
+  reader.readAsText(f);
+});
+
+/* ================================================================ セルフチェック */
+function runSelfCheckTests() {
+  const results = [];
+  const T = (name, fn) => {
+    try {
+      const r = fn();
+      results.push({ name, ok: r === true, detail: r === true ? '' : String(r) });
+    } catch (err) {
+      results.push({ name, ok: false, detail: '例外: ' + err.message });
+    }
+  };
+  const near = (a, b, eps) => Math.abs(a - b) < (eps || 1e-6);
+
+  T('幾何: 線分交点計算', () => {
+    const p = lineLineInt({ x: 0, y: 0 }, { x: 10, y: 0 }, { x: 5, y: -5 }, { x: 5, y: 5 }, true);
+    return (p && near(p.x, 5) && near(p.y, 0)) || '交点 (5,0) が得られませんでした';
+  });
+  T('トリム: 線分の中抜き', () => {
+    const target = { id: 1, type: 'line', layer: '0', x1: 0, y1: 0, x2: 10, y2: 0 };
+    const cutters = [
+      { id: 2, type: 'line', x1: 3, y1: -5, x2: 3, y2: 5 },
+      { id: 3, type: 'line', x1: 7, y1: -5, x2: 7, y2: 5 }
+    ];
+    const r = trimPieces(target, cutters, { x: 5, y: 0 });
+    return (r.add && r.add.length === 2 && near(r.add[0].x2, 3) && near(r.add[1].x1, 7)) || JSON.stringify(r);
+  });
+  T('トリム: 円 → 円弧化', () => {
+    const target = { id: 1, type: 'circle', layer: '0', cx: 0, cy: 0, r: 5 };
+    const cutters = [{ id: 2, type: 'line', x1: -10, y1: 0, x2: 10, y2: 0 }];
+    const r = trimPieces(target, cutters, { x: 0, y: 5 });
+    return (r.add && r.add.length === 1 && r.add[0].type === 'arc') || JSON.stringify(r);
+  });
+  T('延長: 線分 → 境界', () => {
+    const target = { id: 1, type: 'line', layer: '0', x1: 0, y1: 0, x2: 5, y2: 0 };
+    const bounds = [{ id: 2, type: 'line', x1: 8, y1: -5, x2: 8, y2: 5 }];
+    const r = extendTarget(target, bounds, { x: 5, y: 0 });
+    return (r.ent && near(r.ent.x2, 8)) || JSON.stringify(r);
+  });
+  T('フィレット: 直交 2 線分 R5', () => {
+    const e1 = { id: 1, type: 'line', x1: 0, y1: 0, x2: 20, y2: 0 };
+    const e2 = { id: 2, type: 'line', x1: 0, y1: 0, x2: 0, y2: 20 };
+    const r = filletCompute(e1, { x: 15, y: 0 }, e2, { x: 0, y: 15 }, 5);
+    return (r.arc && near(r.arc.r, 5) && near(r.t1.x, 5) && near(r.t2.y, 5) && near(r.arc.cx, 5) && near(r.arc.cy, 5)) || JSON.stringify(r);
+  });
+  T('面取り: 直交 2 線分 (3,4)', () => {
+    const e1 = { id: 1, type: 'line', x1: 0, y1: 0, x2: 20, y2: 0 };
+    const e2 = { id: 2, type: 'line', x1: 0, y1: 0, x2: 0, y2: 20 };
+    const r = chamferCompute(e1, { x: 15, y: 0 }, e2, { x: 0, y: 15 }, 3, 4);
+    return (r.t1 && near(r.t1.x, 3) && near(r.t2.y, 4)) || JSON.stringify(r);
+  });
+  T('寸法: 長さ寸法の計測値', () => {
+    const d = { type: 'dim', dtype: 'linear', p1: { x: 0, y: 0 }, p2: { x: 30, y: 40 }, pos: { x: 15, y: 60 }, ang: 0, style: 'STANDARD' };
+    return near(dimMeasure(d), 30) || '計測値 ' + dimMeasure(d) + ' ≠ 30';
+  });
+  T('寸法: 平行寸法の計測値', () => {
+    const d = { type: 'dim', dtype: 'aligned', p1: { x: 0, y: 0 }, p2: { x: 30, y: 40 }, pos: { x: 0, y: 60 }, style: 'STANDARD' };
+    return near(dimMeasure(d), 50) || '計測値 ' + dimMeasure(d) + ' ≠ 50';
+  });
+  T('寸法: ジオメトリ生成（矢印 2 + ラベル）', () => {
+    const d = { type: 'dim', dtype: 'linear', p1: { x: 0, y: 0 }, p2: { x: 30, y: 0 }, pos: { x: 15, y: 10 }, ang: 0, style: 'STANDARD' };
+    const g = dimGeometry(d);
+    return (g.arrows.length === 2 && g.label && g.label.str === '30.00' && g.segs.length === 3) ||
+      JSON.stringify({ arrows: g.arrows.length, label: g.label && g.label.str, segs: g.segs.length });
+  });
+  T('寸法: 半径 / 直径寸法', () => {
+    const dr = { type: 'dim', dtype: 'radius', p1: { x: 0, y: 0 }, r: 12, pos: { x: 20, y: 0 }, style: 'STANDARD' };
+    const dd = { type: 'dim', dtype: 'diameter', p1: { x: 0, y: 0 }, r: 12, pos: { x: 20, y: 0 }, style: 'STANDARD' };
+    return (dimTextOf(dr) === 'R12.00' && dimTextOf(dd) === '⌀24.00') || dimTextOf(dr) + ' / ' + dimTextOf(dd);
+  });
+  T('寸法スタイル: 精度・適用', () => {
+    S.dimStyles.push({ name: '__TEST__', textH: 5, arrow: 3, extOffset: 1, extBeyond: 1, gap: 1, prec: 1, scale: 2 });
+    try {
+      const d = { type: 'dim', dtype: 'linear', p1: { x: 0, y: 0 }, p2: { x: 10, y: 0 }, pos: { x: 5, y: 5 }, ang: 0, style: '__TEST__' };
+      const g = dimGeometry(d);
+      return (dimTextOf(d) === '10.0' && near(g.label.h, 10)) || dimTextOf(d) + ' / h=' + g.label.h;
+    } finally {
+      S.dimStyles = S.dimStyles.filter(s => s.name !== '__TEST__');
+    }
+  });
+  T('寸法: DXF 用分解', () => {
+    const d = { type: 'dim', dtype: 'linear', p1: { x: 0, y: 0 }, p2: { x: 30, y: 0 }, pos: { x: 15, y: 10 }, ang: 0, style: 'STANDARD', layer: '0' };
+    const prims = dimToPrimitives(d);
+    const lines = prims.filter(p => p.type === 'line').length;
+    const texts = prims.filter(p => p.type === 'text').length;
+    return (lines === 7 && texts === 1) || 'lines=' + lines + ' texts=' + texts;
+  });
+  T('拘束: 平行ソルブ収束', () => {
+    const ents = [
+      { id: 1, type: 'line', x1: 0, y1: 0, x2: 10, y2: 0 },
+      { id: 2, type: 'line', x1: 0, y1: 5, x2: 10, y2: 8 }
+    ];
+    const r = Solver.solve(ents, [{ id: 1, kind: 'parallel', refs: [{ id: 1 }, { id: 2 }] }]);
+    r.apply();
+    const cross = (ents[0].x2 - ents[0].x1) * (ents[1].y2 - ents[1].y1) - (ents[0].y2 - ents[0].y1) * (ents[1].x2 - ents[1].x1);
+    return (r.converged && Math.abs(cross) < 1e-3) || JSON.stringify({ conv: r.converged, cross });
+  });
+  T('拘束: 固定 + 水平 + 距離 → 完全拘束', () => {
+    const ents = [{ id: 1, type: 'line', x1: 0, y1: 0, x2: 10, y2: 3 }];
+    const cons = [
+      { id: 1, kind: 'fix', refs: [{ id: 1, pt: 'start' }], data: { x: 0, y: 0 } },
+      { id: 2, kind: 'horizontal', refs: [{ id: 1 }] },
+      { id: 3, kind: 'adist', refs: [{ id: 1, pt: 'start' }, { id: 1, pt: 'end' }], value: 50 }
+    ];
+    const r = Solver.solve(ents, cons);
+    r.apply();
+    return (r.converged && r.dof === 0 && near(Math.hypot(ents[0].x2, ents[0].y2), 50, 1e-3)) ||
+      JSON.stringify({ conv: r.converged, dof: r.dof, len: Math.hypot(ents[0].x2, ents[0].y2) });
+  });
+  T('拘束: 過拘束（冗長）検出', () => {
+    const ents = [{ id: 1, type: 'line', x1: 0, y1: 0, x2: 10, y2: 1 }];
+    const cons = [
+      { id: 1, kind: 'horizontal', refs: [{ id: 1 }] },
+      { id: 2, kind: 'horizontal', refs: [{ id: 1 }] }
+    ];
+    const r = Solver.solve(ents, cons);
+    return (r.converged && r.redundant >= 1) || JSON.stringify({ conv: r.converged, redundant: r.redundant });
+  });
+  T('拘束: 矛盾検出', () => {
+    const ents = [{ id: 1, type: 'line', x1: 0, y1: 0, x2: 50, y2: 0 }];
+    const cons = [
+      { id: 1, kind: 'hdist', refs: [{ id: 1, pt: 'start' }, { id: 1, pt: 'end' }], value: 50, data: { s: 1 } },
+      { id: 2, kind: 'hdist', refs: [{ id: 1, pt: 'start' }, { id: 1, pt: 'end' }], value: 60, data: { s: 1 } }
+    ];
+    const r = Solver.solve(ents, cons);
+    return (!r.converged) || '矛盾拘束が収束扱いになっています';
+  });
+  T('拘束: 未拘束自由度の計数', () => {
+    const ents = [{ id: 1, type: 'line', x1: 0, y1: 0, x2: 10, y2: 0 }];
+    const r = Solver.solve(ents, [{ id: 1, kind: 'fix', refs: [{ id: 1, pt: 'start' }], data: { x: 0, y: 0 } }]);
+    return (r.dof === 2) || 'dof=' + r.dof + ' ≠ 2';
+  });
+  T('画像: 変換（尺度・回転・当たり判定）', () => {
+    const e = { id: 999, type: 'image', x: 0, y: 0, w: 10, h: 5, rot: 0, opacity: 1, locked: false, src: '__none__' };
+    const s = scaleEnt(e, { x: 0, y: 0 }, 2);
+    const rot = rotateEnt(e, { x: 0, y: 0 }, Math.PI / 2);
+    const hit = hitTest(e, { x: 5, y: 2 }, 0.1);
+    const miss = hitTest(e, { x: 5, y: 8 }, 0.1);
+    return (near(s.w, 20) && near(s.h, 10) && near(rot.rot, Math.PI / 2) && hit && !miss) ||
+      JSON.stringify({ w: s.w, rot: rot.rot, hit, miss });
+  });
+  T('JSON: プロジェクト往復整合', () => {
+    const doc = buildJSONDoc();
+    const parsed = JSON.parse(JSON.stringify(doc));
+    return (validateJSONDoc(parsed) &&
+      parsed.entities.length === S.entities.length &&
+      parsed.constraints.length === S.constraints.length &&
+      parsed.dimStyles.length === S.dimStyles.length) || 'JSON 往復で件数が一致しません';
+  });
+  T('DXF: 書き出し / 読み込み往復', () => {
+    const sample = [
+      { id: 1, type: 'line', layer: '0', color: 256, x1: 0, y1: 0, x2: 10, y2: 10 },
+      { id: 2, type: 'circle', layer: '0', color: 1, cx: 5, cy: 5, r: 3 },
+      { id: 3, type: 'pline', layer: '0', color: 256, closed: true, pts: [{ x: 0, y: 0, bulge: 0.5 }, { x: 10, y: 0, bulge: 0 }, { x: 10, y: 10, bulge: 0 }] }
+    ];
+    const text = writeDXF({ layers: [{ name: '0', color: 7, ltype: 'CONTINUOUS', on: true, locked: false }], entities: sample });
+    const back = parseDXF(text);
+    const pl = back.entities.find(e => e.type === 'pline');
+    return (back.entities.length === 3 && pl && pl.closed && near(pl.pts[0].bulge, 0.5)) ||
+      JSON.stringify({ n: back.entities.length, pl: pl && pl.pts });
+  });
+  T('UI: タブ / 拘束パネル / モーダルの存在', () => {
+    return (!!document.getElementById('ribbon-tabs') &&
+      document.querySelectorAll('.ribbon-page').length >= 6 &&
+      !!document.getElementById('con-list') &&
+      !!document.getElementById('modal-back')) || 'UI 要素が見つかりません';
+  });
+  return results;
+}
+function runSelfCheckUI() {
+  const results = runSelfCheckTests();
+  const body = document.createElement('div');
+  let nOk = 0;
+  for (const r of results) {
+    if (r.ok) nOk++;
+    const row = document.createElement('div');
+    row.className = 'check-row ' + (r.ok ? 'ok' : 'ng');
+    const mark = document.createElement('span');
+    mark.className = 'ck-mark';
+    mark.textContent = r.ok ? '✔' : '✖';
+    const name = document.createElement('span');
+    name.className = 'ck-name';
+    name.textContent = r.name;
+    row.appendChild(mark);
+    row.appendChild(name);
+    if (r.detail) {
+      const det = document.createElement('div');
+      det.className = 'ck-detail';
+      det.textContent = r.detail;
+      name.appendChild(document.createElement('br'));
+      name.appendChild(det);
+    }
+    body.appendChild(row);
+  }
+  const sum = document.createElement('div');
+  sum.className = 'check-summary ' + (nOk === results.length ? 'ok' : 'ng');
+  sum.textContent = nOk === results.length
+    ? 'すべて正常: ' + nOk + ' / ' + results.length + ' 項目'
+    : '異常あり: ' + nOk + ' / ' + results.length + ' 項目が正常';
+  body.appendChild(sum);
+  showModal('セルフチェック — 追加機能の状態', body, [{ label: '閉じる', primary: true, onClick: close => close() }]);
+  log('セルフチェック: ' + nOk + ' / ' + results.length + ' 項目が正常');
+}
+
+/* ================================================================ タブ・パネルの配線 */
+document.querySelectorAll('#ribbon-tabs button').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('#ribbon-tabs button').forEach(b => b.classList.toggle('active', b === btn));
+    document.querySelectorAll('.ribbon-page').forEach(p => p.classList.toggle('active', p.dataset.page === btn.dataset.tab));
+  });
+});
+document.getElementById('con-solve-btn').addEventListener('click', consolveNow);
+document.getElementById('con-clear-btn').addEventListener('click', () => {
+  if (!S.constraints.length) return;
+  if (!confirm('すべての拘束（' + S.constraints.length + ' 個）を削除しますか？')) return;
+  pushHistory();
+  S.constraints = [];
+  S.conStatus = null;
+  log('すべての拘束を削除しました');
+  renderConstraints(); renderProps(); scheduleRedraw();
+});
+
+/* ================================================================ 初期化 */
 resizeCanvas();
 renderLayers();
 renderProps();
+renderConstraints();
 renderToggles();
 updateTitle();
 zoomExtents();
-log('WEBAPP 2DCAD — コマンドを入力してください（例: L=線分, C=円, Z=ズーム）');
+log('WEBAPP 2DCAD — コマンドを入力してください（例: L=線分, TR=トリム, DLI=寸法, GCP=平行拘束）');
 setPrompt('コマンド:');

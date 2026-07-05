@@ -9,49 +9,158 @@
 <body>
 <div id="app">
 
-  <!-- リボン -->
+  <!-- タブ式リボン -->
   <header id="ribbon">
-    <div class="ribbon-group">
-      <div class="ribbon-title">ファイル</div>
-      <div class="ribbon-btns">
-        <button data-cmd="NEW" title="新規図面">🗋<span>新規</span></button>
-        <button data-cmd="OPEN" title="DXF を開く">📂<span>開く</span></button>
-        <button data-cmd="SAVEAS" title="DXF 書き出し (R12)">💾<span>DXF保存</span></button>
+    <div id="ribbon-tabs">
+      <button data-tab="file">ファイル</button>
+      <button data-tab="home" class="active">ホーム</button>
+      <button data-tab="annot">注釈</button>
+      <button data-tab="param">パラメトリック</button>
+      <button data-tab="insert">挿入</button>
+      <button data-tab="view">表示</button>
+    </div>
+
+    <div class="ribbon-page" data-page="file">
+      <div class="ribbon-group">
+        <div class="ribbon-title">図面</div>
+        <div class="ribbon-btns">
+          <button data-cmd="NEW" title="新規図面">🗋<span>新規</span></button>
+          <button data-cmd="OPEN" title="DXF を開く">📂<span>DXFを開く</span></button>
+          <button data-cmd="SAVEAS" title="DXF 書き出し (R12)">💾<span>DXF保存</span></button>
+        </div>
+      </div>
+      <div class="ribbon-group">
+        <div class="ribbon-title">プロジェクト (JSON)</div>
+        <div class="ribbon-btns">
+          <button data-cmd="OPENJSON" title="JSON プロジェクトを開く（寸法・画像・拘束を含む）">📁<span>JSONを開く</span></button>
+          <button data-cmd="SAVEJSON" title="JSON プロジェクト保存（寸法・画像・拘束を含む）">🖫<span>JSON保存</span></button>
+        </div>
       </div>
     </div>
-    <div class="ribbon-group">
-      <div class="ribbon-title">作図</div>
-      <div class="ribbon-btns">
-        <button data-cmd="LINE" title="LINE (L)">╱<span>線分</span></button>
-        <button data-cmd="CIRCLE" title="CIRCLE (C)">◯<span>円</span></button>
-        <button data-cmd="ARC" title="ARC (A) 3点">◠<span>円弧</span></button>
-        <button data-cmd="PLINE" title="PLINE (PL)">﹆<span>ポリライン</span></button>
-        <button data-cmd="RECTANG" title="RECTANG (REC)">▭<span>長方形</span></button>
-        <button data-cmd="TEXT" title="TEXT (T)">A<span>文字</span></button>
-        <button data-cmd="POINT" title="POINT (PO)">·<span>点</span></button>
+
+    <div class="ribbon-page active" data-page="home">
+      <div class="ribbon-group">
+        <div class="ribbon-title">作図</div>
+        <div class="ribbon-btns">
+          <button data-cmd="LINE" title="LINE (L)">╱<span>線分</span></button>
+          <button data-cmd="CIRCLE" title="CIRCLE (C)">◯<span>円</span></button>
+          <button data-cmd="ARC" title="ARC (A) 3点">◠<span>円弧</span></button>
+          <button data-cmd="PLINE" title="PLINE (PL)">﹆<span>ポリライン</span></button>
+          <button data-cmd="RECTANG" title="RECTANG (REC)">▭<span>長方形</span></button>
+          <button data-cmd="POINT" title="POINT (PO)">·<span>点</span></button>
+        </div>
+      </div>
+      <div class="ribbon-group">
+        <div class="ribbon-title">修正</div>
+        <div class="ribbon-btns">
+          <button data-cmd="MOVE" title="MOVE (M)">✥<span>移動</span></button>
+          <button data-cmd="COPY" title="COPY (CO)">⧉<span>複写</span></button>
+          <button data-cmd="ROTATE" title="ROTATE (RO)">⟳<span>回転</span></button>
+          <button data-cmd="SCALE" title="SCALE (SC)">⤢<span>尺度</span></button>
+          <button data-cmd="MIRROR" title="MIRROR (MI)">⧎<span>鏡像</span></button>
+          <button data-cmd="OFFSET" title="OFFSET (O)">≣<span>オフセット</span></button>
+          <button data-cmd="ERASE" title="ERASE (E)">🗑<span>削除</span></button>
+          <button data-cmd="EXPLODE" title="EXPLODE (X)">✶<span>分解</span></button>
+        </div>
+      </div>
+      <div class="ribbon-group">
+        <div class="ribbon-title">編集</div>
+        <div class="ribbon-btns">
+          <button data-cmd="TRIM" title="TRIM (TR) — 切り取りエッジで交差部分を削除">✂<span>トリム</span></button>
+          <button data-cmd="EXTEND" title="EXTEND (EX) — 境界エッジまで延長">⇥<span>延長</span></button>
+          <button data-cmd="FILLET" title="FILLET (F) — 2線分を半径 R の円弧で接続">◟<span>フィレット</span></button>
+          <button data-cmd="CHAMFER" title="CHAMFER (CHA) — 2線分を面取り">◺<span>面取り</span></button>
+        </div>
       </div>
     </div>
-    <div class="ribbon-group">
-      <div class="ribbon-title">修正</div>
-      <div class="ribbon-btns">
-        <button data-cmd="MOVE" title="MOVE (M)">✥<span>移動</span></button>
-        <button data-cmd="COPY" title="COPY (CO)">⧉<span>複写</span></button>
-        <button data-cmd="ROTATE" title="ROTATE (RO)">⟳<span>回転</span></button>
-        <button data-cmd="SCALE" title="SCALE (SC)">⤢<span>尺度</span></button>
-        <button data-cmd="MIRROR" title="MIRROR (MI)">⧎<span>鏡像</span></button>
-        <button data-cmd="OFFSET" title="OFFSET (O)">≣<span>オフセット</span></button>
-        <button data-cmd="ERASE" title="ERASE (E)">🗑<span>削除</span></button>
-        <button data-cmd="EXPLODE" title="EXPLODE (X)">✶<span>分解</span></button>
+
+    <div class="ribbon-page" data-page="annot">
+      <div class="ribbon-group">
+        <div class="ribbon-title">寸法</div>
+        <div class="ribbon-btns">
+          <button data-cmd="DIMLINEAR" title="DIMLINEAR (DLI) — 水平/垂直寸法">⇤⇥<span>長さ寸法</span></button>
+          <button data-cmd="DIMALIGNED" title="DIMALIGNED (DAL) — 平行寸法">⤢<span>平行寸法</span></button>
+          <button data-cmd="DIMRADIUS" title="DIMRADIUS (DRA) — 半径寸法">◜R<span>半径寸法</span></button>
+          <button data-cmd="DIMDIAMETER" title="DIMDIAMETER (DDI) — 直径寸法">⌀<span>直径寸法</span></button>
+          <button data-cmd="DIMSTYLE" title="DIMSTYLE (D) — 寸法スタイル管理">🖉<span>寸法スタイル</span></button>
+        </div>
+      </div>
+      <div class="ribbon-group">
+        <div class="ribbon-title">文字</div>
+        <div class="ribbon-btns">
+          <button data-cmd="TEXT" title="TEXT (T)">A<span>文字</span></button>
+        </div>
       </div>
     </div>
-    <div class="ribbon-group">
-      <div class="ribbon-title">表示・計測</div>
-      <div class="ribbon-btns">
-        <button data-cmd="ZOOM" title="ZOOM (Z)">🔍<span>ズーム</span></button>
-        <button data-cmd="PAN" title="PAN (P)">✋<span>画面移動</span></button>
-        <button data-cmd="DIST" title="DIST (DI)">📏<span>距離</span></button>
-        <button data-cmd="UNDO" title="UNDO (U / Ctrl+Z)">↶<span>元に戻す</span></button>
-        <button data-cmd="REDO" title="REDO (Ctrl+Y)">↷<span>やり直し</span></button>
+
+    <div class="ribbon-page" data-page="param">
+      <div class="ribbon-group">
+        <div class="ribbon-title">幾何拘束</div>
+        <div class="ribbon-btns compact">
+          <button data-cmd="GCCOINCIDENT" title="一致 — 2点を一致させる">⊙<span>一致</span></button>
+          <button data-cmd="GCCOLLINEAR" title="同一線上 — 2線分を同一直線上に">⋯<span>同一線上</span></button>
+          <button data-cmd="GCCONCENTRIC" title="同心円 — 円/円弧の中心を一致">◎<span>同心円</span></button>
+          <button data-cmd="GCPARALLEL" title="平行 — 2線分を平行に">∥<span>平行</span></button>
+          <button data-cmd="GCPERPENDICULAR" title="直交 — 2線分を直角に">⊥<span>直交</span></button>
+          <button data-cmd="GCHORIZONTAL" title="水平 — 線分を水平に">―<span>水平</span></button>
+          <button data-cmd="GCVERTICAL" title="垂直 — 線分を垂直に">｜<span>垂直</span></button>
+          <button data-cmd="GCTANGENT" title="接線 — 線分と円 / 円と円を接する">◠╱<span>接線</span></button>
+          <button data-cmd="GCSYMMETRIC" title="対称 — 2点を軸に対して対称に">⇹<span>対称</span></button>
+          <button data-cmd="GCEQUAL" title="等値 — 長さ / 半径を等しく">＝<span>等値</span></button>
+          <button data-cmd="GCMIDPOINT" title="中点 — 点を線分の中点に">⊹<span>中点</span></button>
+          <button data-cmd="GCFIX" title="固定 — 点を現在位置に固定">📌<span>固定</span></button>
+        </div>
+      </div>
+      <div class="ribbon-group">
+        <div class="ribbon-title">寸法拘束</div>
+        <div class="ribbon-btns compact">
+          <button data-cmd="DCHORIZONTAL" title="水平距離拘束">⇔<span>水平距離</span></button>
+          <button data-cmd="DCVERTICAL" title="垂直距離拘束">⇕<span>垂直距離</span></button>
+          <button data-cmd="DCALIGNED" title="平行距離拘束">⤢<span>平行距離</span></button>
+          <button data-cmd="DCANGLE" title="角度拘束">∠<span>角度</span></button>
+          <button data-cmd="DCRADIUS" title="半径拘束">◜R<span>半径</span></button>
+          <button data-cmd="DCDIAMETER" title="直径拘束">⌀<span>直径</span></button>
+        </div>
+      </div>
+      <div class="ribbon-group">
+        <div class="ribbon-title">管理</div>
+        <div class="ribbon-btns">
+          <button data-cmd="CONSOLVE" title="拘束を再計算して図形を更新">⟲<span>再計算</span></button>
+          <button data-cmd="CONDELETE" title="選択オブジェクトの拘束を削除">⌫<span>拘束削除</span></button>
+        </div>
+      </div>
+    </div>
+
+    <div class="ribbon-page" data-page="insert">
+      <div class="ribbon-group">
+        <div class="ribbon-title">画像</div>
+        <div class="ribbon-btns">
+          <button data-cmd="IMAGEATTACH" title="IMAGEATTACH (IAT) — 画像を下敷きとして配置">🖼<span>画像添付</span></button>
+        </div>
+      </div>
+    </div>
+
+    <div class="ribbon-page" data-page="view">
+      <div class="ribbon-group">
+        <div class="ribbon-title">表示</div>
+        <div class="ribbon-btns">
+          <button data-cmd="ZOOM" title="ZOOM (Z)">🔍<span>ズーム</span></button>
+          <button data-cmd="PAN" title="PAN (P)">✋<span>画面移動</span></button>
+        </div>
+      </div>
+      <div class="ribbon-group">
+        <div class="ribbon-title">計測・履歴</div>
+        <div class="ribbon-btns">
+          <button data-cmd="DIST" title="DIST (DI)">📏<span>距離</span></button>
+          <button data-cmd="UNDO" title="UNDO (U / Ctrl+Z)">↶<span>元に戻す</span></button>
+          <button data-cmd="REDO" title="REDO (Ctrl+Y)">↷<span>やり直し</span></button>
+        </div>
+      </div>
+      <div class="ribbon-group">
+        <div class="ribbon-title">診断</div>
+        <div class="ribbon-btns">
+          <button data-cmd="SELFTEST" title="SELFTEST — 追加機能の状態を自己診断">✅<span>セルフチェック</span></button>
+        </div>
       </div>
     </div>
   </header>
@@ -70,6 +179,15 @@
           <button id="layer-add-btn">追加</button>
         </div>
       </section>
+      <section id="constraints-panel" class="panel">
+        <h3>拘束</h3>
+        <div id="con-status"></div>
+        <div id="con-list"></div>
+        <div id="con-actions">
+          <button id="con-solve-btn" title="拘束を再計算">再計算</button>
+          <button id="con-clear-btn" title="すべての拘束を削除">全削除</button>
+        </div>
+      </section>
       <section id="props-panel" class="panel">
         <h3>プロパティ</h3>
         <div id="props-body"></div>
@@ -83,7 +201,7 @@
     <div id="cmd-row">
       <span id="cmd-prompt">コマンド:</span>
       <input id="cmd-input" type="text" autocomplete="off" spellcheck="false"
-             placeholder="コマンドを入力 (L, C, M, Z ...) — 座標: 10,20 / @5,5 / @10<45">
+             placeholder="コマンドを入力 (L, C, TR, DLI, ...) — 座標: 10,20 / @5,5 / @10<45">
     </div>
   </div>
 
@@ -103,9 +221,17 @@
 </div>
 
 <input type="file" id="file-input" accept=".dxf,.dwg" hidden>
+<input type="file" id="json-input" accept=".json,application/json" hidden>
+<input type="file" id="image-input" accept="image/*" hidden>
 <div id="toast"></div>
 
+<!-- モーダル（寸法スタイル / セルフチェック） -->
+<div id="modal-back" hidden>
+  <div id="modal-box"></div>
+</div>
+
 <script src="dxf.js"></script>
+<script src="solver.js"></script>
 <script src="app.js"></script>
 </body>
 </html>
